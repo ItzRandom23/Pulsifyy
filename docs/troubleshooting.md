@@ -13,4 +13,4 @@
 
 Log node errors and track errors separately. A successful metadata search is different from successful audio playback.
 
-When opening [an issue](https://github.com/ItzRandom23/Pulsify/issues), include Node.js, Pulsify, discord.js, Lavalink, and source plugin versions; the failing command or public track URL; relevant errors; and a small reproduction. Remove bot tokens, server passwords, cookies, and provider credentials from logs first.
+When opening [an issue](https://github.com/ItzRandom23/Pulsify/issues), include the versions of Node.js, Pulsifyy, your Discord client, Lavalink, and any relevant source plugin. Include the failing command or public track URL, relevant errors, and a small reproduction. Remove bot tokens, server passwords, cookies, and provider credentials from logs first.

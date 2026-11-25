@@ -3,6 +3,8 @@ const axios = require("axios");
 const Manager_1 = require("./Manager");
 
 const MAX_CONTENT_BYTES = 8 * 1024 * 1024;
+const nodeCacheGenerations = new WeakMap();
+let nextNodeCacheGeneration = 0;
 
 class LavalinkRequestError extends Error {
     constructor(method, status) {
@@ -14,6 +16,7 @@ class LavalinkRequestError extends Error {
 
 class Rest {
     #password;
+    #nodeCacheGeneration;
     #pendingLoads = new Map();
     #activeRequests = 0;
 
@@ -22,6 +25,8 @@ class Rest {
         this.manager = manager;
         this.url = new URL((node.options.useSSL ? "https://" : "http://") + node.address).origin;
         this.#password = node.options.password;
+        if (!nodeCacheGenerations.has(node)) nodeCacheGenerations.set(node, ++nextNodeCacheGeneration);
+        this.#nodeCacheGeneration = nodeCacheGenerations.get(node);
     }
 
     setSessionId(sessionId) {
@@ -81,10 +86,11 @@ class Rest {
         const cache = this.manager.trackCache;
         const ttl = this.manager.options.trackCacheTtlMs;
         const limit = this.manager.options.trackCacheMaxEntries;
-        if (method !== "GET" || target.pathname !== "/v4/loadtracks" || !ttl || !limit) {
+        const sessionId = this.node.sessionId;
+        if (method !== "GET" || target.pathname !== "/v4/loadtracks" || !ttl || !limit || !sessionId) {
             return this.send(method, target, body);
         }
-        const key = JSON.stringify([this.node.options.identifier, target.search]);
+        const key = JSON.stringify([this.#nodeCacheGeneration, sessionId, target.search]);
         const cached = cache.get(key);
         if (cached) {
             cache.delete(key);
@@ -100,7 +106,8 @@ class Rest {
                 const cacheable = value?.loadType === "empty" ||
                     (value?.loadType === "track" && typeof value.data?.encoded === "string") ||
                     (value?.loadType === "search" && Array.isArray(value.data) && value.data.length <= 100);
-                if (!this.node.destroyed && cacheable && target.search.length < 8192 && JSON.stringify(value).length <= 131072) {
+                if (!this.node.destroyed && this.node.sessionId === sessionId && cacheable &&
+                    target.search.length < 8192 && JSON.stringify(value).length <= 131072) {
                     while (cache.size >= limit) cache.delete(cache.keys().next().value);
                     cache.set(key, { value, expiresAt: Date.now() + ttl });
                 }

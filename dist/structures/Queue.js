@@ -3,6 +3,15 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.Queue = void 0;
 const Manager_1 = require("./Manager");
 const Utils_1 = require("./Utils");
+
+function shuffleItems(items) {
+    for (let index = items.length - 1; index > 0; index--) {
+        const other = Math.floor(Math.random() * (index + 1));
+        [items[index], items[other]] = [items[other], items[index]];
+    }
+    return items;
+}
+
 /**
  * The player's queue, the `current` property is the currently playing track, think of the rest as the up-coming tracks.
  */
@@ -134,10 +143,7 @@ class Queue extends Array {
         // Capture the current state of the player for event emission.
         const oldPlayer = this.manager.players.get(this.guildId) ? { ...this.manager.players.get(this.guildId) } : null;
         // Shuffle the queue.
-        for (let i = this.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [this[i], this[j]] = [this[j], this[i]];
-        }
+        shuffleItems(this);
         // Emit an event to update the player state indicating the queue has been shuffled.
         this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, this.manager.players.get(this.guildId), {
             changeType: Manager_1.PlayerStateEventTypes.QueueChange,
@@ -168,25 +174,23 @@ class Queue extends Array {
             if (!groups.has(id)) groups.set(id, []);
             groups.get(id).push(track);
         }
-        // Advance each group's cursor once per round. Work is linear in the number of tracks.
-        let active = [];
-        for (const tracks of groups.values()) {
-            if (randomize) {
-                for (let index = tracks.length - 1; index > 0; index--) {
-                    const other = Math.floor(Math.random() * (index + 1));
-                    [tracks[index], tracks[other]] = [tracks[other], tracks[index]];
-                }
-            }
-            active.push({ tracks, cursor: 0 });
-        }
+        const blocks = [...groups.values()];
         let index = 0;
-        while (active.length) {
-            const next = [];
-            for (const group of active) {
-                this[index++] = group.tracks[group.cursor++];
-                if (group.cursor < group.tracks.length) next.push(group);
+        if (randomize) {
+            // Advance each group's cursor once per round.
+            let active = blocks.map(tracks => ({ tracks: shuffleItems(tracks), cursor: 0 }));
+            while (active.length) {
+                const next = [];
+                for (const group of active) {
+                    this[index++] = group.tracks[group.cursor++];
+                    if (group.cursor < group.tracks.length) next.push(group);
+                }
+                active = next;
             }
-            active = next;
+        } else {
+            for (const tracks of shuffleItems(blocks)) {
+                for (const track of tracks) this[index++] = track;
+            }
         }
         this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, player, {
             changeType: Manager_1.PlayerStateEventTypes.QueueChange,

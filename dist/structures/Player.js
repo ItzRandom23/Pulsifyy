@@ -10,6 +10,10 @@ const Utils_1 = require("./Utils");
 const { randomUUID } = require("node:crypto");
 const { inspect } = require("node:util");
 const playerCheck_1 = tslib_1.__importDefault(require("../utils/playerCheck"));
+
+class StopConfirmationError extends Error {}
+const guildTransfers = new WeakMap();
+
 class Player {
     options;
     /** The Queue for the Player. */
@@ -61,6 +65,10 @@ class Player {
     lastActivityAt = Date.now();
     operationQueue = Promise.resolve();
     pendingOperations = 0;
+    stopQueue = Promise.resolve();
+    queuedStops = 0;
+    pendingStop;
+    pendingVoiceJoin;
     playbackId;
     destroyTask;
     /** Serializes Lavalink events for this player. */
@@ -175,7 +183,7 @@ class Player {
    * @param sourcePlatforms
    */
     async search(query, requester, sourcePlatforms) {
-        return await this.manager.search(query, requester, sourcePlatforms);
+        return this.manager.searchOnNode(this.node, query, requester, sourcePlatforms);
     }
     /**
      * Connects the player to the voice channel.
@@ -184,29 +192,81 @@ class Player {
      */
     connect(force = false) {
         if (this.destroyRequested) throw new Error("Player has been destroyed.");
-        if (!force && this.state === Utils_1.StateTypes.Connected && this.requestedVoiceChannel === this.voiceChannelId) return;
-        this.lastActivityAt = Date.now();
-        // Check if the voice channel has been set.
-        if (!this.voiceChannelId) {
+        const channelId = this.voiceChannelId;
+        if (!channelId) {
             throw new RangeError("No voice channel has been set. You must use the `setVoiceChannelId()` method to set the voice channel before connecting.");
         }
-        // Set the player state to connecting.
-        // Clone the current player state for comparison.
-        const oldPlayer = this ? { ...this } : null;
-        // Send the voice state update to the gateway.
-        this.manager.options.send(this.guildId, {
+        if (!force && (this.pendingVoiceJoin?.channelId === channelId ||
+            (this.state === Utils_1.StateTypes.Connected && this.requestedVoiceChannel === channelId))) return;
+        const previousState = this.state;
+        const previousChannel = this.requestedVoiceChannel;
+        this.clearVoiceJoin();
+        this.lastActivityAt = Date.now();
+        this.state = Utils_1.StateTypes.Connecting;
+        this.requestedVoiceChannel = channelId;
+        try {
+            this.requestVoiceJoin(channelId, 1);
+        } catch (error) {
+            this.clearVoiceJoin();
+            this.state = previousState === Utils_1.StateTypes.Connecting ? Utils_1.StateTypes.Disconnected : previousState;
+            this.requestedVoiceChannel = this.state === Utils_1.StateTypes.Connected ? previousChannel : null;
+            throw error;
+        }
+    }
+
+    requestVoiceJoin(channelId, attempt) {
+        const join = { channelId, timer: null };
+        this.pendingVoiceJoin = join;
+        const sending = this.manager.options.send(this.guildId, {
             op: 4,
             d: {
                 guild_id: this.guildId,
-                channel_id: this.voiceChannelId,
+                channel_id: channelId,
                 self_mute: this.options.selfMute || false,
                 self_deaf: this.options.selfDeafen || false,
             },
         });
-        // Set the player state to connected.
-        this.requestedVoiceChannel = this.voiceChannelId;
+        if (sending?.then) {
+            Promise.resolve(sending).catch(() => {
+                if (this.pendingVoiceJoin === join && !this.destroyRequested) {
+                    this.node.error(new Error("Failed to send the Discord voice join request."));
+                }
+            });
+        }
+        if (this.pendingVoiceJoin !== join) return;
+        const timeout = Math.max(1000, Math.min(this.node.options.apiRequestTimeoutMs ?? 5000, 5000));
+        join.timer = setTimeout(() => {
+            if (this.pendingVoiceJoin !== join || this.destroyRequested) return;
+            if (this.voiceChannelId !== channelId) {
+                this.clearVoiceJoin();
+                return;
+            }
+            if (attempt < 2) {
+                try {
+                    this.requestVoiceJoin(channelId, attempt + 1);
+                    return;
+                } catch { /* Report the failed join below. */ }
+            }
+            this.clearVoiceJoin();
+            this.state = Utils_1.StateTypes.Disconnected;
+            this.requestedVoiceChannel = null;
+            this.node.error(new Error("Discord did not confirm the voice join."));
+        }, timeout);
+        join.timer.unref();
+    }
+
+    clearVoiceJoin() {
+        clearTimeout(this.pendingVoiceJoin?.timer);
+        this.pendingVoiceJoin = undefined;
+    }
+
+    markVoiceConnected(channelId) {
+        if (this.destroyRequested || !channelId || this.voiceChannelId !== channelId) return;
+        this.clearVoiceJoin();
+        const oldPlayer = { ...this };
+        this.requestedVoiceChannel = channelId;
         this.state = Utils_1.StateTypes.Connected;
-        // Emit the player state update event.
+        if (oldPlayer.state === Utils_1.StateTypes.Connected) return;
         this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, this, {
             changeType: Manager_1.PlayerStateEventTypes.ConnectionChange,
             details: {
@@ -233,26 +293,33 @@ class Player {
         return this;
     }
 
-    leaveVoice() {
-        this.manager.options.send(this.guildId, {
+    async leaveVoice() {
+        const sending = this.manager.options.send(this.guildId, {
             op: 4, d: { guild_id: this.guildId, channel_id: null, self_mute: false, self_deaf: false },
         });
         this.requestedVoiceChannel = null;
         this.voiceChannelId = null;
+        await sending;
     }
 
-    destroy(disconnect = true, preserveSession = false) {
+    destroy(disconnect = true, duringShutdown = false) {
         if (this.destroyTask) return this.destroyTask;
         this.destroyRequested = true;
         const oldPlayer = { ...this };
         this.state = Utils_1.StateTypes.Destroying;
         clearInterval(this.dynamicLoopInterval);
+        this.dynamicLoopInterval = null;
         clearTimeout(this.voiceRecoveryTimer);
+        this.clearVoiceJoin();
+        this.settleStop(this.pendingStop, new StopConfirmationError("Player was destroyed before the stop was confirmed."));
         this.destroyTask = this.operationQueue.then(async () => {
             const failures = [];
-            if (!preserveSession) {
+            const preserveSession = duringShutdown && this.node.options.enableSessionResumeOption;
+            if (preserveSession) {
+                try { await this.manager.persistPlayerState(this, true); } catch (error) { failures.push(error); }
+            } else {
                 if (disconnect && this.voiceChannelId) {
-                    try { this.leaveVoice(); } catch (error) { failures.push(error); }
+                    try { await this.leaveVoice(); } catch (error) { failures.push(error); }
                 }
                 try { await this.node.rest.destroyPlayer(this.guildId); } catch (error) { failures.push(error); }
                 try { await this.manager.removePlayerState(this.guildId); } catch (error) { failures.push(error); }
@@ -260,6 +327,7 @@ class Player {
             this.queue.length = 0;
             this.queue.current = null;
             this.queue.previous = [];
+            this.clearDynamicRepeatTimer();
             this.clearAutoplayPool();
             this.autoplayEnabled = this.isAutoplay = false;
             this.playing = this.paused = false;
@@ -268,6 +336,9 @@ class Player {
             delete this.voiceState.sent;
             delete this.voiceState.sessionId;
             delete this.voiceState.channelId;
+            delete this.voiceState.boundEvent;
+            delete this.voiceState.awaitingServer;
+            this.pendingResumedEnd = undefined;
             this.state = Utils_1.StateTypes.Disconnected;
             const registered = this.manager.players.get(this.guildId) === this;
             if (registered) {
@@ -279,7 +350,7 @@ class Player {
                 changeType: Manager_1.PlayerStateEventTypes.PlayerDestroy,
             });
             this.manager.emit(Manager_1.ManagerEventTypes.PlayerDestroy, this);
-            if (failures.length) throw new AggregateError(failures, "Pulsify could not finish all player cleanup.");
+            if (failures.length) throw new AggregateError(failures, "Pulsifyy could not finish all player cleanup.");
             return registered;
         });
         return this.destroyTask;
@@ -298,7 +369,11 @@ class Player {
         const oldPlayer = this ? { ...this } : null;
         // Update the player voice channel
         this.voiceChannelId = channel;
-        this.connect();
+        try { this.connect(); }
+        catch (error) {
+            this.voiceChannelId = oldPlayer.voiceChannelId;
+            throw error;
+        }
         // Emit a player state update event
         this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, this, {
             changeType: Manager_1.PlayerStateEventTypes.ChannelChange,
@@ -357,7 +432,7 @@ class Player {
         return this.runOperation(() => this.playTrack(optionsOrTrack, playOptions));
     }
 
-    async playTrack(optionsOrTrack, playOptions) {
+    async playTrack(optionsOrTrack, playOptions, playbackId = randomUUID()) {
         const explicitTrack = !Array.isArray(optionsOrTrack) && Utils_1.TrackUtils.validate(optionsOrTrack);
         const track = explicitTrack ? optionsOrTrack : this.queue.current;
         if (!Utils_1.TrackUtils.validate(track)) throw new RangeError("No current track.");
@@ -367,7 +442,6 @@ class Player {
             if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throw new RangeError("Playback times must be non-negative integer milliseconds.");
         }
         if (endTime !== undefined && endTime <= (startTime ?? 0)) throw new RangeError("endTime must be after startTime.");
-        const playbackId = randomUUID();
         const response = await this.node.rest.updatePlayer({
             guildId: this.guildId,
             noReplace,
@@ -378,6 +452,7 @@ class Player {
         });
         if (noReplace && response?.track?.userData?.pulsifyPlaybackId !== playbackId) return this;
         this.playbackId = playbackId;
+        this.settleStop(this.pendingStop);
         if (this.queue.current !== track) this.set("trackFailureAttempts", 0);
         this.queue.current = track;
         if (!this.isAutoplayTrack(track)) this.lastUserRequestedTrackId = track.identifier ?? null;
@@ -438,9 +513,8 @@ class Player {
      * @param {Track} track - The track to find recommendations for.
      * @returns {Promise<Track[]>} - Array of recommended tracks.
      */
-    async getRecommendedTracks(track) {
-        const tracks = await Utils_1.AutoPlayUtils.getRecommendedTracks(track, this.manager, this.node);
-        return tracks;
+    async getRecommendedTracks(track, selectTracks) {
+        return Utils_1.AutoPlayUtils.getRecommendedTracks(track, this.manager, this.node, selectTracks);
     }
     clearAutoplayPool() {
         this.autoplayPool = [];
@@ -466,10 +540,13 @@ class Player {
         const botUser = this.get("Internal_BotUser");
         if (!track || !botUser)
             return null;
-        return {
+        const candidate = {
             ...track,
             requester: botUser,
         };
+        const thumbnail = Object.getOwnPropertyDescriptor(track, "displayThumbnail");
+        if (thumbnail && !thumbnail.enumerable) Object.defineProperty(candidate, "displayThumbnail", thumbnail);
+        return candidate;
     }
     filterAutoplayTracks(tracks, seedTrack) {
         const seedIdentifier = seedTrack?.identifier ?? null;
@@ -517,7 +594,8 @@ class Player {
         if (now - this.autoplayRecommendationAt < 5000 && this.autoplayPool.length)
             return this.autoplayPool;
         this.autoplayRecommendationAt = now;
-        const freshTracks = this.filterAutoplayTracks(await this.getRecommendedTracks(preparedSeedTrack), preparedSeedTrack);
+        const selectTracks = tracks => this.filterAutoplayTracks(tracks, preparedSeedTrack);
+        const freshTracks = selectTracks(await this.getRecommendedTracks(preparedSeedTrack, selectTracks));
         if (this.destroyRequested || !this.autoplayEnabled) return [];
         this.autoplayPool = mergeExisting
             ? this.mergeAndShuffleAutoplayPool(this.autoplayPool, freshTracks, preparedSeedTrack)
@@ -597,6 +675,7 @@ class Player {
             throw new TypeError('Repeat can only be "true" or "false".');
         // Clone the current player state for event emission
         const oldPlayer = this ? { ...this } : null;
+        this.clearDynamicRepeatTimer();
         if (repeat) {
             // Enable track repeat and disable other repeat modes
             this.trackRepeat = true;
@@ -632,6 +711,7 @@ class Player {
             throw new TypeError('Repeat can only be "true" or "false".');
         // Get the current player state
         const oldPlayer = this ? { ...this } : null;
+        this.clearDynamicRepeatTimer();
         // Update the player state
         if (repeat) {
             this.trackRepeat = false;
@@ -655,21 +735,20 @@ class Player {
         return this;
     }
     /**
-     * Sets the queue to repeat and shuffles the queue after each song.
+     * Repeats the queue and periodically shuffles upcoming tracks.
      * @param repeat "true" or "false".
      * @param ms After how many milliseconds to trigger dynamic repeat.
      * @returns {this} - The player instance.
      * @throws {TypeError} If the repeat parameter is not a boolean.
-     * @throws {RangeError} If the queue size is less than or equal to 1.
+     * @throws {RangeError} If the queue is empty when enabling repeat.
      */
     setDynamicRepeat(repeat, ms) {
         // Validate the repeat parameter
         if (typeof repeat !== "boolean") {
             throw new TypeError('Repeat can only be "true" or "false".');
         }
-        // Ensure the queue has more than one track for dynamic repeat
-        if (repeat && this.queue.size <= 1) {
-            throw new RangeError("The queue size must be greater than 1.");
+        if (repeat && this.queue.totalSize === 0) {
+            throw new RangeError("The queue must contain a track.");
         }
         // Clone the current player state for comparison
         const oldPlayer = this ? { ...this } : null;
@@ -679,15 +758,10 @@ class Player {
             this.trackRepeat = false;
             this.queueRepeat = false;
             this.dynamicRepeat = true;
-            if (this.dynamicLoopInterval) {
-                clearInterval(this.dynamicLoopInterval);
-                this.dynamicLoopInterval = null;
-            }
+            this.clearDynamicRepeatTimer();
             // Set an interval to shuffle the queue periodically
             this.dynamicLoopInterval = setInterval(() => {
-                if (!this.dynamicRepeat)
-                    return;
-                this.queue.shuffle();
+                if (this.dynamicRepeat && this.queue.length > 1) this.queue.shuffle();
             }, ms);
             this.dynamicLoopInterval.unref();
             // Store the ms value
@@ -695,9 +769,7 @@ class Player {
         }
         else {
             // Clear the interval and reset repeat states
-            clearInterval(this.dynamicLoopInterval);
-            this.dynamicLoopInterval = null;
-            this.dynamicRepeatIntervalMs = null;
+            this.clearDynamicRepeatTimer();
             this.trackRepeat = false;
             this.queueRepeat = false;
             this.dynamicRepeat = false;
@@ -713,6 +785,12 @@ class Player {
         });
         return this;
     }
+    clearDynamicRepeatTimer() {
+        clearInterval(this.dynamicLoopInterval);
+        this.dynamicLoopInterval = null;
+        this.dynamicRepeatIntervalMs = null;
+    }
+
     /**
      * Restarts the currently playing track from the beginning.
      * If there is no track playing, it will play the next track in the queue.
@@ -727,17 +805,111 @@ class Player {
 
     async stop(amount = 1) {
         if (!Number.isSafeInteger(amount) || amount < 1) throw new RangeError("Skip amount must be a positive integer.");
+        if (this.queuedStops >= 128) throw new Error("Too many queued stop commands.");
+        this.queuedStops++;
+        const scheduled = this.stopQueue.then(async () => {
+            let request = await this.requestStop(amount);
+            while (request && !request.started) {
+                const error = await request.stop.completion;
+                if (error) throw error;
+                request = await this.requestStop(amount);
+            }
+            return request?.stop;
+        });
+        // An accepted stop returns to the caller after the PATCH. Only subsequent
+        // stops wait for TrackEnd, outside the operation queue needed to handle it.
+        const completion = scheduled.then(async stop => {
+            if (!stop) return;
+            const error = await stop.completion;
+            if (error) throw error;
+        }, error => {
+            if (error instanceof StopConfirmationError) throw error;
+        });
+        this.stopQueue = completion;
+        const removeStop = () => {
+            this.queuedStops--;
+            if (this.stopQueue === completion) this.stopQueue = Promise.resolve();
+        };
+        completion.then(removeStop, removeStop);
+        await scheduled;
+        return this;
+    }
+
+    async stopCurrentPlayback(playbackId, track, node, socket) {
+        await this.requestStop(1, () => this.playbackId === playbackId &&
+            this.queue.current === track && this.node === node && node.socket === socket);
+    }
+
+    requestStop(amount, matchesPlayback) {
         return this.runOperation(async () => {
+            if (matchesPlayback && !matchesPlayback()) return;
+            if (this.pendingStop) return { stop: this.pendingStop, started: false };
             if (amount > this.queue.totalSize && amount > 1) throw new RangeError("Cannot skip more than the queue length.");
-            if (!this.queue.current) return this;
+            if (!this.queue.current || (!this.playbackId && !this.playing && !this.paused)) return;
             const oldPlayer = { ...this };
-            await this.node.rest.updatePlayer({ guildId: this.guildId, data: { track: { encoded: null } } });
+            const { promise: completion, resolve } = Promise.withResolvers();
+            const { node } = this;
+            const stop = {
+                node, socket: node.socket, sessionId: node.sessionId, playbackId: this.playbackId,
+                track: this.queue.current, completion, resolve, timer: null,
+            };
+            this.pendingStop = stop;
+            try {
+                await node.rest.updatePlayer({ guildId: this.guildId, data: { track: { encoded: null } } });
+            } catch (error) {
+                this.settleStop(stop, error);
+                throw error;
+            }
+            if (this.pendingStop !== stop) return { stop, started: true };
+            const timeout = Math.max(1000, Math.min(node.options.apiRequestTimeoutMs ?? 5000, 5000));
+            stop.timer = setTimeout(() => this.confirmStoppedPlayback(stop, timeout), timeout);
+            stop.timer.unref();
             const tracks = this.queue.splice(0, amount - 1);
             this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, this, {
                 changeType: Manager_1.PlayerStateEventTypes.QueueChange, details: { changeType: "remove", tracks },
             });
-            return this;
+            return { stop, started: true };
         });
+    }
+
+    async confirmStoppedPlayback(stop, timeout) {
+        const { node, socket, sessionId, track, playbackId } = stop;
+        const matches = () => this.pendingStop === stop && !this.destroyRequested &&
+            this.node === node && node.connected && node.socket === socket && node.sessionId === sessionId &&
+            this.playbackId === playbackId && this.queue.current === track;
+        const failure = new StopConfirmationError("Lavalink did not confirm the stop.");
+        if (!matches()) {
+            this.settleStop(stop, failure);
+            return;
+        }
+        // The REST request and event queue can both take time. Always release
+        // waiting skips even if either remains blocked.
+        stop.timer = setTimeout(() => this.settleStop(stop, failure), timeout);
+        stop.timer.unref();
+        try {
+            const remote = await node.rest.get(node.rest.sessionPath(this.guildId));
+            if (!matches() || remote?.guildId !== this.guildId || remote?.track !== null) return;
+            await node.handleEvent({
+                op: "event", type: "TrackEndEvent", guildId: this.guildId, reason: "stopped",
+                track: { encoded: track.track, userData: playbackId ? { pulsifyPlaybackId: playbackId } : undefined },
+            });
+        } catch (error) {
+            if (matches()) node.error(error);
+        } finally {
+            this.settleStop(stop, failure);
+        }
+    }
+
+    settleStop(stop, error = null) {
+        if (!stop || this.pendingStop !== stop) return;
+        this.pendingStop = undefined;
+        clearTimeout(stop.timer);
+        stop.resolve(error);
+    }
+
+    completeStop(playbackId, track) {
+        const stop = this.pendingStop;
+        if (stop && stop.playbackId === playbackId && (playbackId || stop.track === track)) this.settleStop(stop);
     }
 
     async pause(pause) {
@@ -815,20 +987,23 @@ class Player {
     async restoreOn(node) {
         if (!node.sessionId || !this.voiceChannelId) return false;
         const { event, channelId, sessionId } = this.voiceState;
-        const voice = event?.token && event.endpoint && channelId && sessionId
+        const voice = event?.token && event.endpoint && channelId === this.voiceChannelId && sessionId
             ? { ...event, channelId, sessionId } : undefined;
-        const playbackId = randomUUID();
         const track = this.playing || this.paused ? this.queue.current : null;
+        const playbackId = track ? randomUUID() : undefined;
+        const position = track && track.isSeekable !== false ? this.position : 0;
         await node.rest.updatePlayer({
             guildId: this.guildId,
             data: {
-                paused: this.paused, volume: this.volume, position: track?.isSeekable === false ? 0 : this.position,
-                track: { encoded: track?.track ?? null, userData: { pulsifyPlaybackId: playbackId } },
+                paused: this.paused, volume: this.volume, position,
+                track: track ? { encoded: track.track, userData: { pulsifyPlaybackId: playbackId } } : { encoded: null },
                 filters: this.filters.payload(), voice,
             },
         });
         this.playbackId = playbackId;
+        this.position = position;
         this.playing = !!track && !this.paused;
+        this.settleStop(this.pendingStop, new StopConfirmationError("Playback changed before the stop was confirmed."));
         if (voice) this.voiceState.sent = { ...voice, event, node, nodeSession: node.sessionId };
         else this.connect(true);
         return true;
@@ -847,9 +1022,19 @@ class Player {
             if (!node?.connected) throw new Error("Destination Lavalink node is unavailable.");
             const oldNode = this.node;
             if (node === oldNode) return this;
+            const playbackId = this.playbackId;
+            const position = this.position;
+            const playing = this.playing;
             this.movingTo = node;
             try {
                 if (!await this.restoreOn(node)) throw new Error("Player could not be restored on the destination node.");
+            } catch (error) {
+                this.playbackId = playbackId;
+                this.position = position;
+                this.playing = playing;
+                try { await node.rest.destroyPlayer(this.guildId); }
+                catch (cleanupError) { node.error(cleanupError); }
+                throw error;
             } finally {
                 this.movingTo = undefined;
             }
@@ -878,86 +1063,62 @@ class Player {
             throw new Error("Voice channel ID is required");
         if (!newOptions.textChannelId)
             throw new Error("Text channel ID is required");
-        // Check if a player already exists for the new guild
-        let newPlayer = this.manager.players.get(newOptions.guildId);
-        // If the player already exists and force is false, return the existing player
-        if (newPlayer && !force)
-            return newPlayer;
-        const oldPlayerProperties = {
-            paused: this.paused,
-            selfMute: this.options.selfMute,
-            selfDeafen: this.options.selfDeafen,
-            volume: this.volume,
-            position: this.position,
-            queue: {
-                current: this.queue.current,
-                tracks: [...this.queue],
-                previous: [...this.queue.previous],
-            },
-            trackRepeat: this.trackRepeat,
-            queueRepeat: this.queueRepeat,
-            dynamicRepeat: this.dynamicRepeat,
-            dynamicRepeatIntervalMs: this.dynamicRepeatIntervalMs,
-            ClientUser: this.get("Internal_BotUser"),
-            filters: this.filters,
-            isAutoplay: this.isAutoplay,
-        };
-        // If force is true, destroy the existing player for the new guild
-        if (force && newPlayer) {
-            await newPlayer.destroy();
+        let transferring = guildTransfers.get(this.manager);
+        if (!transferring) guildTransfers.set(this.manager, transferring = new Set());
+        if (transferring.has(this.guildId) || transferring.has(newOptions.guildId)) {
+            throw new Error("A transfer is already in progress for one of these guilds.");
         }
-        newOptions = { ...newOptions };
-        newOptions.node = newOptions.node ?? this.node.options.identifier;
-        newOptions.selfDeafen = newOptions.selfDeafen ?? oldPlayerProperties.selfDeafen;
-        newOptions.selfMute = newOptions.selfMute ?? oldPlayerProperties.selfMute;
-        newOptions.volume = newOptions.volume ?? oldPlayerProperties.volume;
-        // Deep clone the current player
-        const clonedPlayer = this.manager.create(newOptions);
+        // Reserve both guilds before taking either operation queue.
+        transferring.add(this.guildId);
+        transferring.add(newOptions.guildId);
         try {
-            // Connect the cloned player to the new voice channel
-            clonedPlayer.connect();
-            // Update the player's state on the Lavalink node
-            await clonedPlayer.node.rest.updatePlayer({
-                guildId: clonedPlayer.guildId,
-                data: {
-                    paused: oldPlayerProperties.paused,
-                    volume: oldPlayerProperties.volume,
-                    position: oldPlayerProperties.position,
-                    encodedTrack: oldPlayerProperties.queue.current?.track,
-                },
+            const { player, cleanup } = await this.runOperation(() => this.transferGuild(newOptions, force));
+            await cleanup;
+            return player;
+        } finally {
+            transferring.delete(this.guildId);
+            transferring.delete(newOptions.guildId);
+        }
+    }
+
+    async transferGuild(newOptions, force) {
+        const existing = this.manager.players.get(newOptions.guildId);
+        if (existing && !force) return { player: existing };
+        if (existing) await existing.destroy();
+        const player = this.manager.create({
+            ...newOptions,
+            node: newOptions.node ?? this.node.options.identifier,
+            selfDeafen: newOptions.selfDeafen ?? this.options.selfDeafen,
+            selfMute: newOptions.selfMute ?? this.options.selfMute,
+            volume: newOptions.volume ?? this.volume,
+        });
+        try {
+            await player.runOperation(async () => {
+                player.queue.current = this.queue.current;
+                player.queue.previous = [...this.queue.previous];
+                player.queue.add([...this.queue]);
+                player.filters.restore(this.filters.snapshot());
+                player.trackRepeat = this.trackRepeat;
+                player.queueRepeat = this.queueRepeat;
+                if (this.dynamicRepeat && player.queue.totalSize > 0) {
+                    player.setDynamicRepeat(true, this.dynamicRepeatIntervalMs);
+                }
+                const botUser = this.get("Internal_BotUser");
+                if (this.isAutoplay && botUser) player.setAutoplay(true, botUser, this.autoplayTries);
+                player.position = this.position;
+                player.paused = this.paused;
+                player.playing = this.playing;
+                if (!await player.restoreOn(player.node)) {
+                    throw new Error("Player could not be restored in the destination guild.");
+                }
             });
-            clonedPlayer.queue.current = oldPlayerProperties.queue.current;
-            clonedPlayer.queue.previous = oldPlayerProperties.queue.previous;
-            clonedPlayer.queue.add(oldPlayerProperties.queue.tracks);
-            clonedPlayer.filters.restore(oldPlayerProperties.filters.snapshot());
-            clonedPlayer.isAutoplay = oldPlayerProperties.isAutoplay;
-            clonedPlayer.trackRepeat = oldPlayerProperties.trackRepeat;
-            clonedPlayer.queueRepeat = oldPlayerProperties.queueRepeat;
-            if (oldPlayerProperties.dynamicRepeat && clonedPlayer.queue.size > 1) clonedPlayer.setDynamicRepeat(true, oldPlayerProperties.dynamicRepeatIntervalMs);
-            if (oldPlayerProperties.isAutoplay && oldPlayerProperties.ClientUser) clonedPlayer.setAutoplay(true, oldPlayerProperties.ClientUser, this.autoplayTries);
-            clonedPlayer.paused = oldPlayerProperties.paused;
-            // Update filters for the cloned player
-            await clonedPlayer.filters.updateFilters();
         } catch (error) {
-            try { await clonedPlayer.destroy(); } catch (cleanupError) { clonedPlayer.node.error(cleanupError); }
+            try { await player.destroy(); } catch (cleanupError) { player.node.error(cleanupError); }
             throw error;
         }
-        // Debug information
-        const debugInfo = {
-            success: true,
-            message: `Transferred ${clonedPlayer.queue.length} tracks successfully to <#${newOptions.voiceChannelId}> bound to <#${newOptions.textChannelId}>.`,
-            player: {
-                guildId: clonedPlayer.guildId,
-                voiceChannelId: clonedPlayer.voiceChannelId,
-                textChannelId: clonedPlayer.textChannelId,
-                volume: clonedPlayer.volume,
-                playing: clonedPlayer.playing,
-                queueSize: clonedPlayer.queue.size,
-            },
-        };
-        this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[PLAYER] Transferred player to a new server: ${JSON.stringify(debugInfo)}.`);
-        await this.destroy();
-        return clonedPlayer;
+        this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[PLAYER] Transferred player from guild ${this.guildId} to ${player.guildId}.`);
+        // Queue source cleanup after this operation so it can never wait on itself.
+        return { player, cleanup: this.destroy() };
     }
     /**
      * Retrieves the current lyrics for the playing track.

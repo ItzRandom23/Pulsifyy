@@ -1,0 +1,1320 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Get started with Pulsifyy, a Lavalink v4 client for Discord music bots.">
+  <meta name="theme-color" content="#ffffff">
+  <title>Introduction · Pulsifyy</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <script>
+    const preferredTheme = matchMedia("(prefers-color-scheme: dark)");
+    let initialTheme = preferredTheme.matches ? "dark" : "light";
+    try {
+      const saved = localStorage.getItem("pulsify-theme");
+      if (saved === "light" || saved === "dark") initialTheme = saved;
+    } catch { /* System preference also works with browser storage disabled. */ }
+    document.documentElement.dataset.theme = initialTheme;
+  </script>
+  <style>
+    :root {
+      --font-inter: "Inter";
+      --font-paper-mono: "Paper Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --spacing-16-14: 1.14286em;
+      --spacing-8-14: .571429em;
+      --scroll-mt: 152px;
+      --twoslash-border-color: #dbdfde;
+      --twoslash-underline-color: currentColor;
+      --twoslash-popup-bg: #f3f7f6;
+      --twoslash-popup-shadow: #00000014 0px 1px 4px;
+      --twoslash-code-font-size: 1em;
+      --twoslash-highlighted-border: #c37d0d50;
+      --twoslash-highlighted-bg: #c37d0d20;
+      --twoslash-unmatched-color: #888;
+      --twoslash-cursor-color: #8888;
+      --twoslash-error-color: #d45656;
+      --twoslash-error-bg: #d4565620;
+      --twoslash-warn-color: #c37d0d;
+      --twoslash-warn-bg: #c37d0d20;
+      --twoslash-tag-color: #3772cf;
+      --twoslash-tag-bg: #3772cf20;
+      --twoslash-tag-warn-color: #c37d0d;
+      --twoslash-tag-warn-bg: #c37d0d20;
+      --twoslash-tag-annotate-color: #1ba673;
+      --twoslash-tag-annotate-bg: #1ba67320;
+      --twoslash-text-size: .8rem;
+      --twoslash-docs-tag-style: italic;
+      --banner-height: 0px;
+      --primary: 22 163 74;
+      --primary-light: 7 201 131;
+      --primary-dark: 21 128 61;
+      --tooltip-foreground: 255 255 255;
+      --background-light: 255 255 255;
+      --background-dark: 9 13 13;
+      --gray-50: 243 247 245;
+      --gray-100: 238 242 240;
+      --gray-200: 223 227 224;
+      --gray-300: 206 211 208;
+      --gray-400: 159 163 160;
+      --gray-500: 112 116 114;
+      --gray-600: 80 84 82;
+      --gray-700: 63 67 64;
+      --gray-800: 38 42 39;
+      --gray-900: 23 27 25;
+      --gray-950: 10 15 12;
+      --assistant-sheet-width: 0px;
+      --topbar-tabs-height: 3rem;
+      --card-border: #0a0f0c1a;
+      --surface-shadow: #9FA3A04D 0px 0px 0px 1px;
+      --page-gutter: clamp(16px, 4vw, 64px);
+    }
+
+    :root {
+      color-scheme: light;
+      --paper: #fff;
+      --inset: #fafafa;
+      --panel: #fff;
+      --ink: #171b19;
+      --body: #3f4340;
+      --muted: #656c67;
+      --line: #0a0f0c1a;
+      --strong-line: #9fa3a04d;
+      --accent: #16723f;
+      --tint: #16a34a1a;
+      --code: #18221c;
+      --code-ink: #ebf2ed;
+      --cover: #caddc6;
+      --cover-ink: #182d21;
+      --ease: cubic-bezier(.22, 1, .36, 1);
+      --header: 68px;
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --paper: #101512;
+      --inset: #151c17;
+      --panel: #1a221d;
+      --ink: #edf3ee;
+      --body: #c1cdc4;
+      --muted: #a0afa4;
+      --line: #edf3ee21;
+      --strong-line: #cde2d338;
+      --accent: #83dda0;
+      --tint: #79e79a1c;
+      --code: #0c100d;
+      --cover: #baceb6;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html { scroll-padding-top: calc(var(--header) + 24px); }
+    body { margin: 0; background: var(--paper); color: var(--body); font: 400 16px / 1.5 var(--font-inter), system-ui, sans-serif; }
+    h1,h2,h3,p,ul,ol,pre,table { margin: 0; }
+    a { color: inherit; text-decoration: none; }
+    button,input { font: inherit; }
+    button { color: inherit; cursor: pointer; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    :where(h1,h2,main)[tabindex="-1"]:focus:not(:focus-visible) { outline: none; }
+    button { border: 0; background: transparent; }
+    .skip { position: fixed; z-index: 5; inset: 6px auto auto 16px; background: var(--ink); color: var(--paper); padding: 8px 16px; border-radius: 8px; transform: translateY(-150%); }
+    .skip:focus { transform: none; }
+    .icon { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; }
+    .icons { position:absolute; width:0; height:0; overflow:hidden; }
+    .wrap { width: min(calc(100% - 2 * clamp(20px, 4vw, 64px)), 1472px); margin-inline: auto; }
+    .topbar { position: sticky; z-index: 2; top: 0; background: var(--paper); border-bottom: 1px solid var(--line); }
+    .header-inner { height: var(--header); display: flex; align-items: center; gap: 24px; }
+    .brand { display: inline-flex; flex: none; align-items: center; min-height: 44px; border-radius: 2px; color: var(--ink); }
+    .brand-wordmark { display: block; width: 132px; height: auto; fill: currentColor; }
+    .brand-initial { fill: var(--accent); }
+    @media (forced-colors: active) { .brand-initial { fill: currentColor; } }
+    .header-label { padding-left: 16px; margin-left: -8px; border-left: 1px solid var(--strong-line); color: var(--muted); font-size: 14px; }
+    .search-trigger { display: flex; align-items: center; gap: 10px; width: clamp(220px, 23vw, 328px); min-height: 38px; margin-left: auto; padding: 6px 8px 6px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--inset); color: var(--muted); font-size: 14px; text-align: left; }
+    kbd { padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); font: 400 12px / 20px var(--font-inter),system-ui,sans-serif; white-space: nowrap; }
+    .search-trigger kbd { margin-left: auto; }
+    .header-link { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; color: var(--body); font-size: 14px; }
+    .header-link:hover,.resource:hover { color: var(--accent); }
+    .icon-btn { display: inline-grid; place-items: center; flex-shrink: 0; width: 40px; height: 40px; border-radius: 8px; color: var(--muted); }
+    .icon-btn:hover,.search-trigger:hover { background: var(--inset); box-shadow: inset 0 0 0 1px var(--strong-line); }
+    #theme-toggle { margin-left: -12px; }
+    #theme-toggle .sun, [data-theme="dark"] #theme-toggle .moon { display: none; }
+    [data-theme="dark"] #theme-toggle .sun { display: inline; }
+    #menu-toggle { display: none; }
+    .docs-layout { display: grid; grid-template-columns: clamp(190px, 16vw, 236px) minmax(0, 780px) minmax(150px, 190px); justify-content: space-between; align-items: start; gap: clamp(24px, 3vw, 56px); }
+    .library-rail, .article-outline { position: sticky; top: var(--header); max-height: calc(100dvh - var(--header)); overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--strong-line) transparent; }
+    .library-rail { padding: 36px 16px 40px 0; border-right: 1px solid var(--line); min-height: calc(100dvh - var(--header)); }
+    .nav-group + .nav-group { margin-top: 24px; }
+    .nav-group h2,.article-outline h2,.menu-title { color: var(--ink); font-size: 14px; font-weight: 600; line-height: 20px; }
+    .nav-group h2 { padding: 0 12px 8px; }
+    .nav-group ul,.article-outline ul,.search-results { padding: 0; list-style: none; }
+    .nav-group a { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 6px 12px 6px 16px; border-radius: 12px; color: var(--muted); font-size: 14px; line-height: 20px; }
+    .nav-group a:hover { background: var(--inset); color: var(--ink); }
+    .nav-group a[aria-current="page"] { background: var(--tint); color: var(--accent); font-weight: 600; }
+    .nav-group a .icon { width: 16px; height: 16px; }
+    .resources { margin: 24px 10px 0; padding-top: 16px; border-top: 1px solid var(--line); }
+    .resource { display: flex; align-items: center; gap: 8px; min-height: 36px; color: var(--muted); font-size: 14px; }
+    .resource .icon:last-child { width: 12px; margin-left: auto; }
+    main { min-width: 0; padding: 36px 0 40px; }
+    .breadcrumb { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; color: var(--muted); font-size: 12px; }
+    .breadcrumb .icon { width: 13px; height: 13px; }
+    #crumb-title { color: var(--accent); }
+    .compact-outline { position: relative; display: none; margin-left: auto; }
+    .compact-outline summary { cursor: pointer; padding: 6px; color: var(--muted); }
+    .compact-outline ul { position: absolute; z-index: 1; top: 100%; right: 0; width: min(260px, 78vw); max-height: 60dvh; overflow-y: auto; padding: 8px; list-style: none; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 24px #08120d18; }
+    .compact-outline a { display: block; padding: 10px; color: var(--body); border-radius: 8px; font-size: 14px; }
+    .compact-outline a:hover { background: var(--inset); }
+    .compact-outline a[aria-current="location"] { color: var(--accent); background: var(--tint); font-weight: 600; }
+    h1 { color: var(--ink); font-size: 36px; font-weight: 600; letter-spacing: -.045em; line-height: 1.15; }
+    article { min-width: 0; animation: article-in 260ms var(--ease) both; }
+    article .lead { margin: 12px 0 24px; color: var(--body); line-height: 1.55; max-width: 68ch; }
+    article h2 { margin: 32px 0 12px; color: var(--ink); font-weight: 600; font-size: 1.125rem; line-height: 1.4; letter-spacing: -.012em; }
+    article h3 { margin: 20px 0 6px; color: var(--ink); font-size: .875rem; font-weight: 600; }
+    article p + p, article p + ul, article p + ol, article li + li, article :is(ul,ol) + p { margin-top: 10px; }
+    article ul, article ol { padding-left: 24px; }
+    article :is(p,li,td) a { color: var(--accent); text-decoration: underline; text-decoration-color: var(--strong-line); text-underline-offset: .2em; }
+    article :is(p,li,td) a:hover { text-decoration-color: var(--accent); }
+    article :not(pre) > code { display: inline-block; max-width: 100%; padding: 1px 5px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: var(--inset); font: .85em / 1.4 var(--font-paper-mono); overflow-wrap: anywhere; }
+    article table :not(pre) > code { max-width: none; white-space: nowrap; overflow-wrap: normal; }
+    .cover {
+      position: relative; isolation: isolate; overflow: hidden;
+      display: flex; align-items: center; min-height: 192px;
+      margin: 20px 0 16px; padding: 24px 32px;
+      background: var(--cover); color: var(--cover-ink); border-radius: 16px;
+    }
+    .cover img { position: absolute; z-index: -1; inset: 0 0 0 auto; width: 50%; height: 100%; object-fit: cover; object-position: 66% center; mask-image: linear-gradient(90deg,transparent,#000 18%); transition: transform 350ms var(--ease); }
+    .cover:hover img { transform: scale(1.025); }
+    .cover-copy { display: grid; align-content: center; gap: 6px; width: 49%; }
+    .cover h2 { margin: 0; color: inherit; font-size: 24px; font-weight: 600; line-height: 1.25; letter-spacing: -.035em; }
+    .cover p { color: #324838; font-size: 14px; line-height: 20px; }
+    .cover-action { display: inline-flex; justify-self: start; align-items: center; gap: 8px; margin-top: 10px; padding: 7px 12px; border-radius: 8px; background: #193723; color: #fff; font-size: 14px; font-weight: 500; }
+    .cover-action .icon { width: 14px; height: 14px; transition: transform 160ms var(--ease); }
+    .cover:hover .cover-action .icon { transform: translateX(2px); }
+    .feature-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+    .feature { position: relative; padding: 16px 20px; border: 1px solid var(--line); border-radius: 16px; background: var(--paper); transition: border-color 160ms, background-color 160ms; }
+    .feature:hover { border-color: var(--strong-line); background: var(--inset); }
+    .feature-icon { color: var(--accent); width: 20px; height: 20px; display: block; margin-bottom: 12px; }
+    .feature h3 { margin: 0 0 4px; }
+    .feature p,.link-row small { color: var(--muted); font-size: 14px; line-height: 20px; }
+    .feature .go { position: absolute; top: 16px; right: 16px; width: 14px; color: var(--muted); }
+    .link-rows { border-block: 1px solid var(--line); }
+    .link-row { display: flex; gap: 16px; align-items: center; padding: 16px 4px; }
+    .link-row + .link-row { border-top: 1px solid var(--line); }
+    .link-row > .icon:first-child { color: var(--accent); }
+    .link-row > .icon:last-child { margin-left: auto; color: var(--muted); width: 14px; }
+    .link-row strong,.link-row small { display: block; }
+    .link-row strong { color: var(--ink); font-size: 14px; font-weight: 600; }
+    .link-row:hover strong { color: var(--accent); }
+    .article-outline { padding-top: 40px; }
+    .article-outline h2 { margin-bottom: 14px; display:flex; gap:8px; align-items:center; }
+    .article-outline h2 .icon { width: 15px; height: 15px; }
+    #outline-links a { display: block; padding: 6px 0 6px 12px; border-left: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+    #outline-links a:hover { color: var(--ink); }
+    #outline-links a[aria-current] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+    .code-block { overflow: hidden; min-width: 0; margin-block: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--code); color: var(--code-ink); }
+    .code-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 36px; padding: 0 12px 0 16px; border-bottom: 1px solid #e0eee21c; color: #c0cfc1; font: 12px / 1.4 var(--font-paper-mono); }
+    .copy-code { min-height: 32px; min-width: 44px; color: #d5dfd6; font: 12px / 1.4 var(--font-inter),system-ui,sans-serif; }
+    .copy-code:hover { color: #fff; }
+    .copy-code:focus-visible, pre:focus-visible { outline-color: #83dda0; outline-offset: -2px; }
+    pre { min-width: 0; overflow-x: auto; padding: 16px; color: var(--code-ink); background: var(--code); font: 14px / 1.6 var(--font-paper-mono); tab-size: 2; }
+    pre code { font: inherit; }
+    pre .kw { color: #d4bcef; }
+    pre .str { color: #afe1ae; }
+    pre .num { color: #efc690; }
+    pre .comment { color: #afbbb0; }
+    pre .fn { color: #a8d9e0; }
+    .article-footer { display: flex; justify-content: space-between; align-items:center; flex-wrap:wrap; gap: 8px 16px; border-top: 1px solid var(--line); margin-top: 32px; padding: 20px 0; color: var(--muted); font-size: 12px; }
+    .article-footer nav { display:flex; align-items:center; gap: 16px; }
+    .article-footer a:hover { color: var(--accent); }
+    .page-turns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 32px; }
+    .page-turns a { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; }
+    .page-turns a:hover { background: var(--inset); border-color: var(--strong-line); }
+    .page-turns small { display: block; color: var(--muted); font-size: 12px; }
+    .page-turns strong { color: var(--ink); font-size: 14px; font-weight: 600; }
+    .page-turns .icon { color: var(--accent); }
+    .page-turns [rel="prev"] .icon { transform: rotate(180deg); }
+    .page-turns [rel="next"] { grid-column: 2; justify-content: flex-end; text-align: right; }
+    .table-scroll { margin-block:16px; overflow-x:auto; border: 1px solid var(--line); border-radius: 12px; }
+    .table-scroll:focus-visible { outline-offset: -2px; }
+    table { border-collapse: collapse; width: 100%; font-size: 14px; }
+    th,td { padding: 10px 14px; text-align: left; vertical-align: top; }
+    th { color: var(--ink); background: var(--inset); font-weight: 600; }
+    tbody tr { border-top: 1px solid var(--line); }
+    .source-matrix :is(th,td):nth-child(-n+3) { width: 1%; white-space: nowrap; }
+    .table-scroll td:last-child { min-width: 16ch; }
+    .modal { position:fixed; color: var(--body); background: var(--paper); border: 1px solid var(--strong-line); border-radius: 16px; box-shadow: 0 16px 48px #08120d24; padding: 0; overflow: auto; overscroll-behavior: contain; }
+    .modal[open] { animation: dialog-in 180ms var(--ease) both; }
+    .modal::backdrop { background: #09110c63; }
+    body:has(dialog[open]) { overflow: hidden; }
+    .search-dialog { width: min(calc(100% - 32px), 590px); margin: min(12vh,100px) auto auto; max-height: min(68dvh,620px); }
+    .search-dialog[open] { display: flex; flex-direction: column; overflow: hidden; }
+    .search-heading-row { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 8px 0 20px; }
+    .search-heading-row h2 { margin: 0; color: var(--ink); font-size: 16px; line-height: 24px; font-weight: 600; }
+    .search-close { display: grid; place-items: center; width: 44px; height: 44px; flex: none; border-radius: 8px; color: var(--muted); font-size: 13px; }
+    .search-close:hover { color: var(--ink); background: var(--inset); }
+    .search-close:focus-visible { outline-offset: -4px; }
+    .search-bar { display: flex; flex: none; align-items: center; gap: 10px; margin: 0 20px; border-bottom: 2px solid var(--line); color: var(--muted); transition: border-color 150ms var(--ease); }
+    .search-bar:focus-within { border-color: var(--accent); color: var(--accent); }
+    .search-bar input { flex: 1; min-width: 0; min-height: 44px; padding: 8px 0; border: 0; border-radius: 0; background: transparent; color: var(--ink); font-size: 16px; }
+    .search-bar input:focus { outline: none; }
+    .search-bar input::placeholder { color: var(--muted); opacity: 1; }
+    @media (forced-colors: active) { .search-bar:focus-within { border-color: Highlight; } }
+    #search-status { padding: 16px 20px 4px; font-size: 13px; color: var(--muted); }
+    .search-results { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 4px 8px 8px; scrollbar-width: thin; }
+    .search-results a { display: grid; align-content: center; min-height: 44px; gap: 2px; padding: 10px 12px; border-radius: 8px; font-size: 14px; }
+    .search-results strong { color: var(--ink); font-weight: 600; }
+    .search-results small { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; color: var(--muted); font-size: 12px; line-height: 18px; }
+    .search-results a:hover { background: var(--inset); }
+    .search-results a:focus-visible { background: var(--tint); outline-offset: -2px; }
+    .mobile-menu { margin: 0 auto 0 0; width: min(320px,90vw); max-width: 100vw; max-height: 100dvh; height: 100dvh; border-radius: 0 16px 16px 0; padding: 16px 16px 32px; }
+    .menu-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; padding-left: 12px; }
+    .mobile-menu .nav-group a { min-height: 44px; }
+    @keyframes article-in { from { opacity: .35; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+    @keyframes dialog-in { from { opacity: 0; transform: translateY(-4px); } to { opacity:1; transform: none; } }
+    @media (min-width: 1800px) { .header-inner { max-width: 1535.2px; } }
+    @media (max-width: 1120px) {
+      html { --crumb-height: 40px; scroll-padding-top: calc(var(--header) + var(--crumb-height) + 12px); }
+      .docs-layout { grid-template-columns: 196px minmax(0,1fr); gap: 32px; }
+      .article-outline { display: none; }
+      .breadcrumb { position: sticky; z-index: 1; top: calc(var(--header) + 1px); height: var(--crumb-height); flex-wrap: nowrap; background: var(--paper); }
+      #crumb-group { flex: none; }
+      #crumb-title { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .compact-outline { display: block; flex: none; }
+    }
+    @media (max-width: 760px) {
+      :root { --header: 60px; }
+      .header-inner { gap: 12px; }
+      .header-label,.header-link,.library-rail { display: none; }
+      #menu-toggle { display: inline-grid; margin-left: -8px; }
+      .brand-wordmark { width: 118px; }
+      .docs-layout { display: block; }
+      main { padding-top: 24px; }
+      .search-trigger { width: auto; min-height: 42px; }
+      #theme-toggle { margin-left: 0; }
+      .cover { padding: 24px; }
+    }
+    @media (max-width: 500px) {
+      .wrap { width: calc(100% - 32px); }
+      .header-inner { gap: 8px; }
+      .search-trigger { display: inline-grid; place-items: center; width: 42px; min-height: 42px; border: 0; background: transparent; padding: 0; }
+      .search-trigger span,.search-trigger kbd { display: none; }
+      h1 { font-size: 30px; }
+      .cover { min-height: 188px; padding: 20px; }
+      .cover-copy { width: 58%; }
+      .cover-action { gap: 4px; padding-inline: 10px; white-space: nowrap; }
+      .cover img { width: 43%; }
+      .cover h2 { font-size: 20px; }
+      .feature-grid { grid-template-columns: 1fr; }
+      .feature { padding: 16px 36px 16px 52px; }
+      .feature-icon { position: absolute; inset: 18px auto auto 16px; }
+      th,td { padding-inline: 10px; }
+      .page-turns { grid-template-columns: 1fr; }
+      .page-turns [rel="next"] { grid-column: 1; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *,*::before,*::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+    }
+
+  </style>
+</head>
+<body>
+  <svg class="icons" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M12 6c-3-2-6-2-9-1v14c3-1 6-1 9 1 3-2 6-2 9-1V5c-3-1-6-1-9 1zm0 0v14"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m6.5 9 3 3-3 3m6 0H17"/></symbol>
+    <symbol id="i-players" viewBox="0 0 24 24"><path d="M3 5h14M3 10h11M3 15h6m5-2 6 4-6 4z"/></symbol>
+    <symbol id="i-sources" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></symbol>
+    <symbol id="i-filters" viewBox="0 0 24 24"><path d="M4 6h5m4 0h7M4 12h9m4 0h3M4 18h3m4 0h9"/><circle cx="11" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="9" cy="18" r="2"/></symbol>
+    <symbol id="i-events" viewBox="0 0 24 24"><path d="M2 12h5l3-8 4 16 3-8h5"/></symbol>
+    <symbol id="i-nodes" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h1M7 17.5h1"/></symbol>
+    <symbol id="i-recovery" viewBox="0 0 24 24"><path d="M3 5v6h6M3.5 10a8.5 8.5 0 1 1 .6 6"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><path d="m7 6-5 6 5 6m10-12 5 6-5 6m-4-14-2 16"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.7 2.7 0 0 1 5.3 1c0 2-2.8 2.2-2.8 4m0 2h.01"/></symbol>
+    <symbol id="i-package" viewBox="0 0 24 24"><path d="m3 7 9-5 9 5v10l-9 5-9-5zm0 0 9 5 9-5m-9 5v10m-4.5-17.5 9 5"/></symbol>
+    <symbol id="i-out" viewBox="0 0 24 24"><path d="M6 18 18 6M7 6h11v11"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h10M8 18h13M3 6h.1M3 12h.1M3 18h.1"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.8 14A9 9 0 0 1 10 3.2 9 9 0 1 0 20.8 14Z"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-git" viewBox="0 0 24 24"><circle cx="7" cy="5" r="2.5"/><circle cx="7" cy="19" r="2.5"/><circle cx="17" cy="6" r="2.5"/><path d="M7 7.5v9m10-8c0 5-2 6-10 6"/></symbol>
+  </defs></svg>
+  <a class="skip" href="#library">Skip to documentation</a>
+  <header class="topbar">
+    <div class="wrap header-inner">
+      <button type="button" class="icon-btn" id="menu-toggle" aria-label="Open navigation" aria-haspopup="dialog" aria-controls="mobile-menu" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-menu"></use></svg></button>
+      <a class="brand" href="/" aria-label="Pulsifyy documentation home">
+        <svg class="brand-wordmark" viewBox="0 0 146 38" width="132" height="34" aria-hidden="true" focusable="false">
+          <g transform="matrix(1 0 -.13 1 4 0)">
+            <!-- A record groove opens through the stem of the initial P. -->
+            <path class="brand-initial" d="M2 3h13.6C22 3 26 6.9 26 12.6s-4.1 9.7-10.5 9.7H8.2v7.2L2 32V10h13.1c1.9 0 3.1 1 3.1 2.6s-1.2 2.8-3.1 2.8h-4.3V18h4.3c3.5 0 6-2 6-5.4s-2.5-5.4-6-5.4H2Z"/>
+            <!-- The remaining letters share the forward slant and angled terminals. -->
+            <path d="M28.6 10.7h5.1v11.7c0 2.5 1 3.9 3.3 3.9 3 0 4.8-2.2 4.8-5.9v-9.7h5.1V30h-4.8v-2.6c-1.4 2-3.6 3-6.3 3-4.6 0-7.2-2.9-7.2-7.8Z"/>
+            <path d="m50.9 4.4 5.1-2v21.8c0 1.6.8 2.2 2.4 2.1l-.5 3.9c-4.6.7-7-1.3-7-5.6Z"/>
+            <path d="M59.4 27.8 62 24.5c1.8 1.3 3.8 2.1 6 2.1 2 0 3.3-.7 3.3-2 0-1.1-1.1-1.6-3.9-2.3-4.2-1-7-2.1-7-5.8 0-3.9 3.3-6.2 7.9-6.2 2.9 0 5.6.8 7.9 2.4l-2.5 3.3c-1.7-1.2-3.6-1.8-5.4-1.8-1.7 0-2.9.7-2.9 1.8s1.1 1.6 3.8 2.3c4.3 1 7.2 2.2 7.2 5.9 0 4-3.4 6.2-8.4 6.2-3.2 0-6.4-.9-8.6-2.6Z"/>
+            <path d="M79.3 10.7h5.1V30h-5.1Zm-.2-7.5h5.5v4.7h-5.5Z"/>
+            <path d="M90.1 30V14.9h-3.2v-4.2h3.2V9c0-4.6 2.7-7 7.3-7 1.4 0 2.6.2 3.5.5l-.8 4c-.6-.2-1.3-.3-2.1-.3-1.9 0-2.8 1-2.8 3v1.5h4.4l-.7 4.2h-3.7V30Z"/>
+            <path id="brand-letter-y" d="M100.5 10.7h5.5l4.8 13.2 5.2-13.2h5.4l-8.7 20c-2 4.6-4.5 6.1-8.6 6.1-1.3 0-2.6-.3-3.5-.7l1.1-4c.7.3 1.5.5 2.3.5 1.8 0 2.9-.8 3.8-2.8Z"/>
+            <use href="#brand-letter-y" x="22"/>
+          </g>
+        </svg>
+      </a>
+      <span class="header-label">Documentation</span>
+      <button type="button" class="search-trigger" id="search-toggle" aria-label="Search documentation" aria-haspopup="dialog" aria-controls="search-dialog" aria-expanded="false" aria-keyshortcuts="Control+k Meta+k"><svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg><span>Search docs…</span><kbd>Ctrl K</kbd></button>
+      <a class="header-link" href="https://github.com/ItzRandom23/Pulsify"><svg class="icon" aria-hidden="true"><use href="#i-git"></use></svg>GitHub</a>
+      <a class="header-link" href="/introduction/community-support">Support</a>
+      <button type="button" class="icon-btn" id="theme-toggle" aria-label="Dark theme"><svg class="icon moon" aria-hidden="true"><use href="#i-moon"></use></svg><svg class="icon sun" aria-hidden="true"><use href="#i-sun"></use></svg></button>
+    </div>
+  </header>
+  <div class="wrap docs-layout">
+    <aside class="library-rail">
+      <nav id="guide-nav" aria-label="Documentation">
+        <div class="nav-group"><h2>Getting started</h2>
+          <ul>
+            <li><a data-nav href="/"><svg class="icon" aria-hidden="true"><use href="#i-book"></use></svg>Introduction</a></li>
+            <li><a data-nav href="/quickstart"><svg class="icon" aria-hidden="true"><use href="#i-terminal"></use></svg>Quickstart</a></li>
+          </ul>
+        </div>
+        <div class="nav-group"><h2>Guides</h2>
+          <ul>
+            <li><a data-nav href="/players"><svg class="icon" aria-hidden="true"><use href="#i-players"></use></svg>Player management</a></li>
+            <li><a data-nav href="/sources"><svg class="icon" aria-hidden="true"><use href="#i-sources"></use></svg>Search and sources</a></li>
+            <li><a data-nav href="/filters"><svg class="icon" aria-hidden="true"><use href="#i-filters"></use></svg>Audio filters</a></li>
+            <li><a data-nav href="/events"><svg class="icon" aria-hidden="true"><use href="#i-events"></use></svg>Events and listeners</a></li>
+            <li><a data-nav href="/configuration"><svg class="icon" aria-hidden="true"><use href="#i-nodes"></use></svg>Node configuration</a></li>
+            <li><a data-nav href="/recovery"><svg class="icon" aria-hidden="true"><use href="#i-recovery"></use></svg>Session recovery</a></li>
+          </ul>
+        </div>
+        <div class="nav-group"><h2>Reference</h2>
+          <ul>
+            <li><a data-nav href="/api"><svg class="icon" aria-hidden="true"><use href="#i-code"></use></svg>API reference</a></li>
+            <li><a data-nav href="/troubleshooting"><svg class="icon" aria-hidden="true"><use href="#i-help"></use></svg>Troubleshooting</a></li>
+          </ul>
+        </div>
+        <div class="resources">
+          <a class="resource" href="https://www.npmjs.com/package/pulsifyy"><svg class="icon" aria-hidden="true"><use href="#i-package"></use></svg>npm package<svg class="icon" aria-hidden="true"><use href="#i-out"></use></svg></a>
+        </div>
+      </nav>
+    </aside>
+    <main id="library" tabindex="-1">
+      <div class="breadcrumb"><svg class="icon" aria-hidden="true"><use href="#i-book"></use></svg><span id="crumb-group">Getting started</span><svg class="icon" aria-hidden="true"><use href="#i-chevron"></use></svg><span id="crumb-title">Introduction</span>
+        <details class="compact-outline"><summary>On this page</summary><ul></ul></details>
+      </div>
+      <article id="introduction" data-group="Getting started">
+        <h1>Introduction</h1>
+        <p class="lead">Pulsifyy helps you add music to a Discord bot. Your bot receives a song request, Pulsifyy manages the queue, and a Lavalink v4 server streams the audio into the voice channel.</p>
+        <a class="cover" href="/quickstart">
+          <img src="/quickstart.webp" width="1080" height="720" alt="">
+          <div class="cover-copy">
+            <h2 id="getting-started">Getting started</h2>
+            <p>Connect a bot to Lavalink and play your first track in Discord.</p>
+            <span class="cover-action">Open quickstart <svg class="icon" aria-hidden="true"><use href="#i-arrow"></use></svg></span>
+          </div>
+        </a>
+        <pre data-lang="Install with npm"><code>npm install pulsifyy</code></pre>
+        <p>Already have a bot? <a href="/quickstart/existing">Connect your existing Discord client</a>. For a first bot, the <a href="/quickstart/install">optional discord.js starter</a> includes the voice connection and play command.</p>
+        <h2 id="core-features">Core features</h2>
+        <div class="feature-grid">
+          <a class="feature" href="/players"><svg class="icon feature-icon" aria-hidden="true"><use href="#i-players"></use></svg><svg class="icon go" aria-hidden="true"><use href="#i-arrow"></use></svg><h3>Player management</h3><p>Create a guild player and control its queue.</p></a>
+          <a class="feature" href="/sources"><svg class="icon feature-icon" aria-hidden="true"><use href="#i-sources"></use></svg><svg class="icon go" aria-hidden="true"><use href="#i-arrow"></use></svg><h3>Search and sources</h3><p>Load tracks and playlists from your node’s providers.</p></a>
+          <a class="feature" href="/filters"><svg class="icon feature-icon" aria-hidden="true"><use href="#i-filters"></use></svg><svg class="icon go" aria-hidden="true"><use href="#i-arrow"></use></svg><h3>Audio filters</h3><p>Change the equalizer, playback speed, and pitch.</p></a>
+          <a class="feature" href="/events"><svg class="icon feature-icon" aria-hidden="true"><use href="#i-events"></use></svg><svg class="icon go" aria-hidden="true"><use href="#i-arrow"></use></svg><h3>Events and listeners</h3><p>Handle track changes, node errors, and queue events.</p></a>
+        </div>
+        <h2 id="advanced-configuration">Advanced configuration</h2>
+        <div class="link-rows">
+          <a class="link-row" href="/configuration"><svg class="icon" aria-hidden="true"><use href="#i-nodes"></use></svg><span><strong>Node configuration</strong><small>Choose a node, tune timeouts, and set limits on queues and cached tracks.</small></span><svg class="icon" aria-hidden="true"><use href="#i-arrow"></use></svg></a>
+          <a class="link-row" href="/recovery"><svg class="icon" aria-hidden="true"><use href="#i-recovery"></use></svg><span><strong>Session recovery</strong><small>Resume a Lavalink session or restore players after a restart.</small></span><svg class="icon" aria-hidden="true"><use href="#i-arrow"></use></svg></a>
+        </div>
+        <h2 id="api-reference">API reference</h2>
+        <p>Look up <a href="/api/classes">Manager, Player, Queue, and Node</a>, or see <a href="/api/imports">how to import Pulsifyy</a> in a CommonJS or ES module.</p>
+        <h2 id="why-pulsify">Why Pulsifyy?</h2>
+        <p>One Manager handles the voice packets and Lavalink connections for your bot. Each guild gets its own player and queue, so a skip, filter change, or repeat command affects only that guild.</p>
+        <h2 id="community-support">Community &amp; support</h2>
+        <p>Start with <a href="/troubleshooting">troubleshooting</a> if your bot joins voice and stays silent. To report a bug, <a href="https://github.com/ItzRandom23/Pulsify/issues">open a GitHub issue</a> with the failing command and your library and server versions.</p>
+      </article>
+    <article id="quickstart" data-group="Getting started" hidden>
+      <h1>Quickstart</h1>
+      <p class="lead">Start with one working audio source and one voice channel. You can add Pulsifyy to a bot you already run or try the complete starter in a new folder.</p>
+      <h2 id="quickstart-package">Install Pulsifyy</h2>
+      <p>In a bot project using Node.js 22.19 or newer, run the command below. If you are starting in an empty folder, run <code>npm init -y</code> there first. The npm package name is <code>pulsifyy</code>, with two y’s.</p>
+      <pre data-lang="Shell"><code>npm install pulsifyy</code></pre>
+      <p>discord.js is optional for running Pulsifyy. If your bot already receives Discord gateway events, follow <a href="/quickstart/existing">the existing-client steps</a>. If you want a bot you can run from scratch, follow <a href="/quickstart/install">the discord.js starter</a>. Both paths use a Lavalink node.</p>
+      <h2 id="quickstart-prerequisites">Prepare a Lavalink node</h2>
+      <p>A <strong>node</strong> is one Lavalink server your bot can ask to find and play audio. If you already have one, get its host, port, password, and TLS setting. Check that SoundCloud search is enabled for this example.</p>
+      <p>To run your own node, follow the <a href="https://lavalink.dev/getting-started/index.html">Lavalink v4 installation guide</a>. Save this <code>application.yml</code> beside <code>Lavalink.jar</code>, choose a password, then run <code>java -jar Lavalink.jar</code>. Leave it running while you start the bot.</p>
+      <pre data-lang="YAML"><code>server:
+  port: 2333
+  address: 127.0.0.1
+lavalink:
+  server:
+    password: <span class="str">"</span><span class="str">change-this-password</span><span class="str">"</span>
+    sources:
+      youtube: false
+      soundcloud: true
+    soundcloudSearchEnabled: true</code></pre>
+      <h2 id="quickstart-existing">Connect your existing Discord client</h2>
+      <p>Create one <code>Manager</code> at startup and share it across your bot’s commands. It needs a way to send a voice join or leave request through the Discord connection that owns the target server. Discord calls a server a <em>guild</em>, so <code>guildId</code> means server ID.</p>
+      <p>The function below takes a callback you supply, <code>sendToGuild(guildId, payload)</code>. Implement that callback with your client’s gateway send method and pass the payload through unchanged. Set the <code>LAVALINK_*</code> environment variables to match your node.</p>
+      <pre data-lang="JavaScript"><code><span class="kw">const</span> { Manager, SearchPlatform } = require(<span class="str">"pulsifyy"</span>);
+
+<span class="kw">function</span> createMusicManager(sendToGuild) {
+  <span class="kw">const</span> manager = <span class="kw">new</span> Manager({
+    nodes: [{
+      identifier: <span class="str">"main"</span>,
+      host: process.env.LAVALINK_HOST,
+      port: Number(process.env.LAVALINK_PORT ?? <span class="num">2333</span>),
+      password: process.env.LAVALINK_PASSWORD,
+      useSSL: process.env.LAVALINK_SSL === <span class="str">"true"</span>,
+    }],
+    send: sendToGuild,
+    defaultSearchPlatform: SearchPlatform.SoundCloud,
+  });
+  manager.on(<span class="str">"nodeConnect"</span>, node =&gt; console.log(<span class="str">"Lavalink connected"</span>, node.options.identifier));
+  manager.on(<span class="str">"nodeError"</span>, (node, error) =&gt; console.error(node.options.identifier, error));
+  <span class="kw">return</span> manager;
+}</code></pre>
+      <ol>
+        <li>Call <code>createMusicManager(sendToGuild)</code> once and keep the returned manager. Enable the Guilds and Guild Voice States intents in your Discord client.</li>
+        <li>In your client’s raw gateway handler, forward <code>VOICE_STATE_UPDATE</code> and <code>VOICE_SERVER_UPDATE</code> packets to <code>manager.updateVoiceState(packet)</code> and handle any rejected promise. The packets carry the details Lavalink uses to join voice.</li>
+        <li>When Discord signals that your bot is ready, call <code>manager.init(botUserId)</code> with the logged-in bot’s user ID. When you see <code>Lavalink connected</code>, your node is ready for a <a href="/sources/search">first search</a>. To play the result, <a href="/players/create">create a player for the listener’s guild</a>.</li>
+      </ol>
+      <h2 id="quickstart-install">Run the optional discord.js starter</h2>
+      <p>The starter uses discord.js 14 to log in and read messages such as <code>!play</code>. In the folder where you installed Pulsifyy, add the starter’s Discord client.</p>
+      <pre data-lang="Shell"><code>npm install discord.js@14</code></pre>
+      <p>Create a bot in the <a href="https://discord.com/developers/applications">Discord Developer Portal</a>, enable Message Content Intent on its Bot page, and invite it to a test server with View Channel, Send Messages, Connect, and Speak permissions. Message Content lets this example read its text commands.</p>
+      <p>Download the <a href="https://github.com/ItzRandom23/Pulsify/blob/main/examples/basic-bot/index.js">starter bot</a> into the new project using the command for your shell.</p>
+      <pre data-lang="Shell"><code><span class="comment"># PowerShell
+</span>$repo = 'https://raw.githubusercontent.com/ItzRandom23/Pulsify/main'
+Invoke-WebRequest "$repo/examples/basic-bot/index.js" -OutFile index.js</code></pre>
+      <pre data-lang="Shell"><code><span class="comment"># macOS or Linux
+</span>repo='https://raw.githubusercontent.com/ItzRandom23/Pulsify/main'
+curl -fL "$repo/examples/basic-bot/index.js" -o index.js</code></pre>
+      <p>Save these settings in <code>.env</code>, fill in your bot token and server password, and add <code>.env</code> to your project's <code>.gitignore</code>.</p>
+      <pre><code>DISCORD_TOKEN=your_discord_bot_token
+LAVALINK_HOST=127.0.0.1
+LAVALINK_PORT=2333
+LAVALINK_PASSWORD=change-this-password
+LAVALINK_SSL=false</code></pre>
+      <h2 id="quickstart-first-track">Play a track with the starter</h2>
+      <pre data-lang="Shell"><code>node --env-file=.env index.js</code></pre>
+      <p>Wait for the Discord login and Lavalink connection messages. Join a voice channel and send <code>!play song name</code> to the bot. You can also use an HTTPS link from <code>soundcloud.com</code>. Try <code>!pause</code>, <code>!resume</code>, <code>!skip</code>, and <code>!leave</code> once playback starts.</p>
+      <p>See <a href="/troubleshooting">Troubleshooting</a> if the bot fails to connect or play. To extend the starter, continue to <a href="/players">Player management</a> and <a href="/events">Events and listeners</a>.</p>
+    </article>
+
+    <article id="players" data-group="Guides" hidden>
+      <h1>Player management</h1>
+      <p class="lead">A player is the voice connection and playback queue for one Discord server. Reuse the same player when someone in that server requests another song.</p>
+      <h2 id="players-create">Create a player and start playback</h2>
+      <p>Wait for the manager's <code>nodeConnect</code> event before running playback commands. You need the server ID, the listener’s voice channel ID, the text channel ID for replies, and a song name or URL. The example reads those from a discord.js message. With another client, get the same values from its command handler.</p>
+      <pre data-lang="JavaScript"><code><span class="kw">const</span> { LoadTypes, SearchPlatform } = require(<span class="str">"pulsifyy"</span>);
+
+<span class="kw">async</span> <span class="kw">function</span> queueTracks(manager, message, query) {
+  <span class="kw">const</span> voice = message.member?.voice.channel;
+  <span class="kw">if</span> (!voice) <span class="kw">return</span> message.reply(<span class="str">"Join a voice channel first."</span>);
+
+  <span class="kw">const</span> guildId = message.guild.id;
+  <span class="kw">const</span> existing = manager.players.get(guildId);
+  <span class="kw">if</span> (existing &amp;&amp; existing.voiceChannelId !== voice.id) {
+    <span class="kw">return</span> message.reply(<span class="str">"Join my voice channel to control playback."</span>);
+  }
+
+  <span class="kw">const</span> result = <span class="kw">await</span> manager.search(query, message.author, SearchPlatform.SoundCloud);
+  <span class="kw">if</span> (!result.tracks.length) <span class="kw">return</span> message.reply(<span class="str">"No tracks found."</span>);
+
+  <span class="kw">const</span> player = existing ?? manager.create({
+    guildId, voiceChannelId: voice.id, textChannelId: message.channel.id, selfDeafen: <span class="kw">true</span>,
+  });
+  player.connect();
+  <span class="kw">const</span> tracks = result.loadType === LoadTypes.Playlist ? result.tracks : [result.tracks[<span class="num">0</span>]];
+  player.queue.add(tracks);
+  <span class="kw">if</span> (!player.playing &amp;&amp; !player.paused &amp;&amp; player.queue.current) <span class="kw">await</span> player.play();
+}</code></pre>
+      <h2 id="players-controls">Control playback and the queue</h2>
+      <p>Read <code>player.queue.current</code> for the current track. <code>queue.length</code> counts upcoming tracks and <code>queue.totalSize</code> includes the current track. Call <code>queue.clear()</code> to remove upcoming tracks while the current one plays.</p>
+      <pre data-lang="JavaScript"><code><span class="kw">await</span> player.pause(<span class="kw">true</span>);
+<span class="kw">await</span> player.pause(<span class="kw">false</span>);
+<span class="kw">await</span> player.setVolume(<span class="num">50</span>);
+<span class="kw">await</span> player.seek(<span class="num">30</span>_000); <span class="comment">// Seekable tracks only, in milliseconds.</span>
+<span class="kw">await</span> player.stop();     <span class="comment">// Skip the current track.</span>
+<span class="kw">await</span> player.destroy();  <span class="comment">// Remove the player and leave voice.</span></code></pre>
+      <h2 id="players-repeat-autoplay">Repeat and autoplay</h2>
+      <p>Choose <code>player.setTrackRepeat(true)</code> or <code>player.setQueueRepeat(true)</code> to repeat the current track or queue. Enable recommendations with <code>player.setAutoplay(true, client.user, 3)</code> and turn them off with <code>player.setAutoplay(false)</code>. Set <code>autoPlaySearchPlatforms</code> on the manager to choose recommendation sources your node supports.</p>
+      <p>See <a href="/sources">Search and sources</a> for provider setup and <a href="/filters">Audio filters</a> for effects.</p>
+    </article>
+
+    <article id="sources" data-group="Guides" hidden>
+      <h1>Search and sources</h1>
+      <p class="lead">Start with SoundCloud, then choose how your bot searches for tracks, loads links, and handles the results.</p>
+      <h2 id="sources-search">Run your first SoundCloud search</h2>
+      <p><code>SearchPlatform</code> tells Pulsifyy which search prefix to send to Lavalink. The provider runs on the Lavalink node, where it looks up tracks and resolves playback. Picking a source in JavaScript only works if the node has its provider enabled.</p>
+      <ol>
+        <li>Follow <a href="/quickstart">Quickstart</a> to get a bot connected to Lavalink. The starter uses Lavalink's built-in SoundCloud provider.</li>
+        <li>In the node's <code>application.yml</code>, enable <code>lavalink.server.sources.soundcloud</code> and <code>lavalink.server.soundcloudSearchEnabled</code>. Preserve the other settings and restart Lavalink after making changes.</li>
+        <li>Wait for the startup message <code>Lavalink connected</code>, then join a voice channel and send <code>!play artist song</code>. Use a song available on SoundCloud.</li>
+      </ol>
+      <p>In an async command handler, let <code>requester</code> be the user who asked for the song. For example, the discord.js starter gets that user from <code>message.author</code>. Try a real artist and song title and inspect the first match before adding anything to the queue.</p>
+      <pre data-lang="JavaScript"><code><span class="kw">const</span> { SearchPlatform } = require(<span class="str">"pulsifyy"</span>);
+<span class="kw">const</span> result = <span class="kw">await</span> manager.search(
+  <span class="str">"artist song"</span>, requester, SearchPlatform.SoundCloud,
+);
+console.log(result.tracks[<span class="num">0</span>]?.title ?? <span class="str">"No matches"</span>);</code></pre>
+
+      <h2 id="sources-defaults">Choose a default or override it</h2>
+      <p>Omitting a source uses <code>defaultSearchPlatform</code> for text queries. Pulsifyy defaults to Deezer, so set <code>defaultSearchPlatform: SearchPlatform.SoundCloud</code> in your existing <code>new Manager({ ... })</code> options if you only enabled SoundCloud.</p>
+      <pre data-lang="JavaScript"><code><span class="comment">// Use the manager's configured default.</span>
+<span class="kw">await</span> manager.search(query, requester);
+
+<span class="comment">// Use Bandcamp for this request. Enable its provider on Lavalink first.</span>
+<span class="kw">await</span> manager.search(query, requester, SearchPlatform.Bandcamp);
+
+<span class="comment">// Try SoundCloud first and Bandcamp if the first lookup cannot load a result.</span>
+<span class="kw">await</span> manager.search(query, requester, [
+  SearchPlatform.SoundCloud, SearchPlatform.Bandcamp,
+]);</code></pre>
+      <p>When a guild already has a player, you can call <code>player.search()</code> with the same arguments. If you use several Lavalink nodes, enable the source on each node that may receive a request.</p>
+
+      <h2 id="sources-results">Load links and handle results</h2>
+      <p>Pass a full HTTP(S) track or playlist URL as the query to load that exact link. Pulsifyy sends the URL directly to Lavalink, where an enabled source handles it. The text-search default and overrides apply to song names. The Quickstart bot accepts HTTPS links from <code>soundcloud.com</code>.</p>
+      <ul>
+        <li><code>LoadTypes.Search</code> returns alternative matches. Queue the first result or offer the user a choice.</li>
+        <li><code>LoadTypes.Track</code> returns one track. <code>LoadTypes.Playlist</code> returns the collection in order.</li>
+        <li><code>LoadTypes.Empty</code> returns an empty <code>tracks</code> array. A failed load or unavailable node can reject the request.</li>
+      </ul>
+      <p>Here is a helper for the starter’s message handler. It replies when loading fails or finds nothing, and returns the number of tracks it queued. In another Discord client, substitute its user and reply methods.</p>
+      <pre data-lang="JavaScript"><code><span class="kw">const</span> { LoadTypes, SearchPlatform } = require(<span class="str">"pulsifyy"</span>);
+
+<span class="kw">async function</span> queueRequestedTracks(player, message, query) {
+  <span class="kw">let</span> result;
+  <span class="kw">try</span> {
+    result = <span class="kw">await</span> player.search(query, message.author, SearchPlatform.SoundCloud);
+  } <span class="kw">catch</span> (error) {
+    console.error(error);
+    <span class="kw">await</span> message.reply(<span class="str">"I couldn't load tracks. Try again in a moment."</span>);
+    <span class="kw">return</span> <span class="num">0</span>;
+  }
+
+  <span class="kw">if</span> (!result.tracks.length) {
+    <span class="kw">await</span> message.reply(<span class="str">"I couldn't find any tracks."</span>);
+    <span class="kw">return</span> <span class="num">0</span>;
+  }
+
+  <span class="kw">const</span> tracks = result.loadType === LoadTypes.Playlist ? result.tracks : [result.tracks[<span class="num">0</span>]];
+  player.queue.add(tracks);
+  <span class="kw">return</span> tracks.length;
+}</code></pre>
+      <p>See <a href="/players">Player management</a> for creating the player and starting playback after adding tracks.</p>
+
+      <h2 id="sources-server-setup">Enable providers on Lavalink</h2>
+      <p>These are the built-in <code>SearchPlatform</code> options in Pulsifyy. Install any required plugin on the Lavalink server, enable the provider, and restart the node. The prefix below is what Lavalink receives before the search text.</p>
+      <div class="table-scroll"><table class="source-matrix">
+        <thead><tr><th scope="col">Source</th><th scope="col">Enum member</th><th scope="col">Prefix</th><th scope="col">Lavalink setup</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Apple Music</th><td><code>AppleMusic</code></td><td><code>amsearch:</code></td><td>PulseLink. Set up a playback mirror. Media API token is optional.</td></tr>
+          <tr><th scope="row">Audiomack</th><td><code>AudioMack</code></td><td><code>admsearch:</code></td><td>PulseLink. Built-in credentials can be overridden.</td></tr>
+          <tr><th scope="row">Bandcamp</th><td><code>Bandcamp</code></td><td><code>bcsearch:</code></td><td>Enable Lavalink's built-in <code>bandcamp</code> source.</td></tr>
+          <tr><th scope="row">Deezer</th><td><code>Deezer</code></td><td><code>dzsearch:</code></td><td>PulseLink. Configure <code>arl</code> and <code>masterDecryptionKey</code>.</td></tr>
+          <tr><th scope="row">Gaana</th><td><code>Gaana</code></td><td><code>gnsearch:</code></td><td>PulseLink. Enable the provider.</td></tr>
+          <tr><th scope="row">JioSaavn</th><td><code>Jiosaavn</code></td><td><code>jssearch:</code></td><td>PulseLink. Enable the provider and use its defaults.</td></tr>
+          <tr><th scope="row">SoundCloud</th><td><code>SoundCloud</code></td><td><code>scsearch:</code></td><td>Enable built-in SoundCloud and <code>soundcloudSearchEnabled</code>, or enable PulseLink's provider. Choose one per node.</td></tr>
+          <tr><th scope="row">Spotify</th><td><code>Spotify</code></td><td><code>spsearch:</code></td><td>PulseLink. Set up a playback mirror.</td></tr>
+          <tr><th scope="row">Tidal</th><td><code>Tidal</code></td><td><code>tdsearch:</code></td><td>PulseLink. Configure a mirror or the documented direct playback requirements.</td></tr>
+          <tr><th scope="row">VK Music</th><td><code>VKMusic</code></td><td><code>vksearch:</code></td><td>PulseLink. Configure <code>userToken</code>.</td></tr>
+          <tr><th scope="row">YouTube</th><td><code>YouTube</code></td><td><code>ytsearch:</code></td><td>Enable the <code>youtube-source</code> plugin and its search option.</td></tr>
+          <tr><th scope="row">YouTube Music</th><td><code>YouTubeMusic</code></td><td><code>ytmsearch:</code></td><td>Use the same plugin with its <code>MUSIC</code> search client and a playback-capable client.</td></tr>
+        </tbody>
+      </table></div>
+      <p><strong>Use YouTube and YouTube Music at your own risk.</strong> In 2021, YouTube sent cease-and-desist notices to the original Groovy and Rythm Discord music bots. Review the <a href="https://www.youtube.com/t/terms">YouTube Terms of Service</a> and use content you have permission to play.</p>
+      <p>A playback mirror finds audio for a track whose original service supplies metadata. For example, a Spotify search can identify a track successfully while playback still depends on mirrors configured in PulseLink. See <a href="https://github.com/ItzRandom23/PulseLink#providers-and-mirroring">PulseLink providers and mirroring</a>, <a href="https://lavalink.dev/configuration/config/file">Lavalink configuration</a>, and <a href="https://github.com/lavalink-devs/youtube-source#plugin">YouTube plugin setup</a>.</p>
+      <p>Autoplay picks recommendations separately from text search. Configure <code>autoPlaySearchPlatforms</code> with the <code>AutoPlayPlatform</code> values for Deezer, JioSaavn, SoundCloud, Spotify, Tidal, or VK Music. Last.fm is an optional recommendation fallback when you configure <code>lastFmApiKey</code>.</p>
+
+      <h2 id="sources-troubleshoot">Troubleshoot a failed lookup</h2>
+      <ul>
+        <li><strong>No available nodes.</strong> Check that Lavalink started, wait for <code>nodeConnect</code>, and verify the host, port, password, and TLS settings.</li>
+        <li><strong>No tracks for a song name.</strong> Try a known search from an explicitly selected source, then check the node's provider and search settings. A successful direct URL load only verifies that URL path.</li>
+        <li><strong>Search works and playback fails.</strong> Check the node's playback error and the provider credentials or mirrors. If every source fails after the bot joins voice, check Discord voice events and permissions.</li>
+      </ul>
+      <p>For connection and voice diagnostics, see <a href="/troubleshooting">Troubleshooting</a>.</p>
+    </article>
+
+    <article id="filters" data-group="Guides" hidden>
+      <h1>Audio filters</h1>
+      <p class="lead">Change what listeners hear in a Discord voice channel. Boost the bass, adjust the tempo and pitch, or move the sound between stereo channels while a track plays.</p>
+      <h2 id="filters-apply">Apply an effect</h2>
+      <p>Start a track with the <a href="/quickstart">Quickstart</a>. In an async handler, use your initialized <code>manager</code> and the Discord server's ID as <code>guildId</code> to find its player. The guard makes sure there is a track to listen to before you change its sound.</p>
+      <pre data-lang="JavaScript"><code><span class="kw">const</span> player = manager.get(guildId);
+<span class="kw">if</span> (!player?.queue.current || !player.playing) {
+  <span class="kw">throw new</span> Error(<span class="str">"Start or resume a track in this server first."</span>);
+}
+
+<span class="kw">await</span> player.filters.nightcore(<span class="kw">true</span>);</code></pre>
+      <p>The track should sound faster and higher pitched. Await each change and handle any rejection in your command handler before reporting success.</p>
+
+      <h2 id="filters-presets">Choose a preset</h2>
+      <p>Presets set the filter values for you. Pass <code>true</code> to turn a preset on and <code>false</code> to turn it off. With <code>bassBoost()</code>, try <code>1</code> for a mild boost, <code>-1</code> for a mild cut, or <code>0</code> to turn it off.</p>
+      <div class="table-scroll"><table>
+        <thead><tr><th scope="col">Method on <code>player.filters</code></th><th scope="col">What listeners hear</th><th scope="col">Required Lavalink filters</th></tr></thead>
+        <tbody>
+          <tr><td><code>nightcore(true)</code></td><td>Faster playback and a higher pitch.</td><td><code>timescale</code></td></tr>
+          <tr><td><code>slowmo(true)</code></td><td>Slower playback at the original pitch.</td><td><code>timescale</code></td></tr>
+          <tr><td><code>bassBoost(1)</code></td><td>A mild boost to the low end.</td><td><code>equalizer</code></td></tr>
+          <tr><td><code>eightD(true)</code></td><td>Sound that moves between stereo channels.</td><td><code>rotation</code> and <code>channelMix</code></td></tr>
+        </tbody>
+      </table></div>
+      <p>Nightcore and slowmo both use <code>timescale</code>. To switch from nightcore to slowmo, turn nightcore off first. Bass boost can stay on alongside either preset because it uses the equalizer.</p>
+      <pre data-lang="JavaScript"><code><span class="kw">await</span> player.filters.nightcore(<span class="kw">false</span>);
+<span class="kw">await</span> player.filters.slowmo(<span class="kw">true</span>);</code></pre>
+
+      <h2 id="filters-compose">Combine custom settings</h2>
+      <p>Clear any active presets, then set the effects you want to combine. This example adds a small boost at 63 and 100 Hz and speeds the track up by 5% with the original pitch and rate.</p>
+      <pre data-lang="JavaScript"><code><span class="kw">await</span> player.filters.clearFilters();
+<span class="kw">await</span> player.filters.setEqualizer([
+  { band: <span class="num">2</span>, gain: <span class="num">0.15</span> },
+  { band: <span class="num">3</span>, gain: <span class="num">0.1</span> },
+]);
+<span class="kw">await</span> player.filters.setTimescale({ speed: <span class="num">1.05</span>, pitch: <span class="num">1</span>, rate: <span class="num">1</span> });</code></pre>
+      <p>The equalizer and timescale can run together. To tune the bass, choose the bands closest to the frequencies you want to change. See the <a href="https://lavalink.dev/api/rest#equalizer">Lavalink equalizer bands and gain range</a>.</p>
+
+      <h2 id="filters-reset">Reset the player</h2>
+      <p>For the custom setup above, call <code>await player.filters.setTimescale()</code> to remove the speed adjustment and keep the equalizer. Call <code>await player.filters.setEqualizer([])</code> to clear the equalizer. To reset the filters together, use <code>clearFilters()</code>.</p>
+      <pre data-lang="JavaScript"><code><span class="kw">await</span> player.filters.clearFilters();</code></pre>
+      <p>The track and queue stay in place.</p>
+
+      <h2 id="filters-troubleshoot">Troubleshoot an effect</h2>
+      <ul>
+        <li><strong>No audible change.</strong> Confirm the track is playing on the player for this server. Use the same passage to compare the sound before and after a clearly audible preset such as nightcore.</li>
+        <li><strong>Lavalink rejects the change.</strong> Check <code>player.node.info?.filters</code> after the node connects. Every filter used by the preset needs to be enabled on that node. If the effects are present, check the supplied values and the Lavalink error before retrying.</li>
+        <li><strong>Looking for reverb.</strong> Stock Lavalink v4 has no built-in reverb. See the <a href="https://lavalink.dev/api/rest#filters">Lavalink filter list</a> for supported effects.</li>
+      </ul>
+      <p>Find the remaining methods and option types in the <a href="/api">API reference</a>.</p>
+    </article>
+
+    <article id="events" data-group="Guides" hidden>
+      <h1>Events and listeners</h1>
+      <p class="lead">A listener is a function Pulsifyy calls when something happens. A play command asks Lavalink to start a track. A <code>trackStart</code> event tells your bot that Lavalink has reported the start.</p>
+      <h2 id="events-register">Register listeners</h2>
+      <p>Find the <code>new Manager(...)</code> in your bot's startup file. Place the following listeners immediately after it, before <code>manager.init()</code>. Each listener handles events for every guild served by that manager. If you're using the <a href="/quickstart">quickstart</a>, replace its existing listeners for the same events.</p>
+      <pre data-lang="JavaScript"><code>manager.on(<span class="str">"nodeConnect"</span>, node =&gt; {
+  console.log(<span class="str">"Node ready:"</span>, node.options.identifier);
+});
+
+manager.on(<span class="str">"nodeError"</span>, (node, error) =&gt; {
+  console.error(node.options.identifier, error.message);
+});
+
+manager.on(<span class="str">"trackStart"</span>, (player, track) =&gt; {
+  console.log(player.guildId, <span class="str">"Playing:"</span>, track.title);
+});
+
+manager.on(<span class="str">"trackEnd"</span>, (player, track, payload) =&gt; {
+  console.log(player.guildId, <span class="str">"Ended:"</span>, track.title, payload.reason);
+});
+
+manager.on(<span class="str">"queueEnd"</span>, player =&gt; {
+  console.log(player.guildId, <span class="str">"Queue empty"</span>);
+});</code></pre>
+      <h2 id="events-lifecycle">Follow two tracks through a queue</h2>
+      <p>Try this with the starter bot, one guild, and two short playable tracks. Leave <code>playNextOnEnd</code> enabled (the default) and turn repeat and autoplay off. Once both songs are queued, let them finish without sending more playback commands.</p>
+      <ol>
+        <li>Start the bot. <code>nodeConnect</code> fires after a node is ready. A reconnect can produce another <code>nodeConnect</code> for that node.</li>
+        <li>Queue the first track and start playback. Its <code>trackStart</code> listener prints the title. Queue the second track while the first plays.</li>
+        <li>When the first track finishes, <code>trackEnd</code> receives that track and the reason <code>finished</code>. The manager advances the queue and requests playback. Lavalink's next start event produces <code>trackStart</code> for the second track.</li>
+        <li>When the second track finishes, expect its <code>trackEnd</code>, then <code>queueEnd</code> for the empty queue. Your bot can stay connected and accept another play command.</li>
+      </ol>
+      <p>Repeat can select a track again. Autoplay can find a recommendation before <code>queueEnd</code> fires. Clearing upcoming items while a track plays also leaves that track running. Use the <code>track</code> argument to identify the song that ended because <code>player.queue.current</code> can already point to the next song. See <a href="/players">players and queues</a>.</p>
+      <h2 id="events-common">Common events</h2>
+      <p>The <code>node</code> identifies the Lavalink server. The <code>player</code> belongs to one Discord guild. The <code>track</code> holds Pulsifyy's track metadata, and <code>payload</code> contains event details from Lavalink. List only the arguments your listener uses.</p>
+      <div class="table-scroll"><table>
+        <thead><tr><th scope="col">Event</th><th scope="col">Listener arguments</th><th scope="col">What to inspect</th></tr></thead>
+        <tbody>
+          <tr><td><code>nodeConnect</code></td><td><code>node</code></td><td><code>node.options.identifier</code> names the ready server.</td></tr>
+          <tr><td><code>nodeError</code></td><td><code>node, error</code></td><td><code>error.message</code> describes the node problem.</td></tr>
+          <tr><td><code>trackStart</code></td><td><code>player, track, payload</code></td><td><code>player.guildId</code> and <code>track.title</code> identify the playback.</td></tr>
+          <tr><td><code>trackEnd</code></td><td><code>player, track, payload</code></td><td><code>payload.reason</code> distinguishes a natural finish from a stop or load failure.</td></tr>
+          <tr><td><code>trackError</code></td><td><code>player, track, payload</code></td><td><code>payload.exception</code> describes a track exception that your recovery callback did not handle.</td></tr>
+          <tr><td><code>queueEnd</code></td><td><code>player, track, payload</code></td><td><code>track</code> is the last track and <code>payload</code> is its end event.</td></tr>
+        </tbody>
+      </table></div>
+      <p>For player, node, and chapter event signatures, see the <a href="https://github.com/ItzRandom23/Pulsify/blob/main/docs/usage.md#additional-events">additional event list</a>.</p>
+      <h2 id="events-async">Handle asynchronous work</h2>
+      <p>Node's event emitter calls listeners synchronously and continues as soon as each returns. A failed file write or Discord message send can reject later. Catch that failure inside the listener. This CommonJS example records one JSON line per <code>trackEnd</code> event in the bot's working directory, including the reason the track ended.</p>
+      <pre data-lang="JavaScript"><code><span class="kw">const</span> { appendFile } = require(<span class="str">"node:fs/promises"</span>);
+
+<span class="kw">async function</span> recordTrackEnd(player, track, payload) {
+  <span class="kw">const</span> entry = { guildId: player.guildId, title: track.title, reason: payload.reason };
+  <span class="kw">try</span> {
+    <span class="kw">await</span> appendFile(<span class="str">"playback.jsonl"</span>, JSON.stringify(entry) + <span class="str">"\n"</span>);
+  } <span class="kw">catch</span> (error) {
+    console.error(<span class="str">"Playback log write failed:"</span>, error.message);
+  }
+}
+
+manager.on(<span class="str">"trackEnd"</span>, recordTrackEnd);</code></pre>
+      <h2 id="events-debug">Trace a missing or repeated announcement</h2>
+      <ul>
+        <li><strong>Each start prints twice.</strong> Check <code>manager.listenerCount("trackStart")</code> and inspect each registration. Registering inside a play command adds another listener on every command. For a reloadable module, call <code>manager.off("trackEnd", recordTrackEnd)</code> on teardown using the same function you registered.</li>
+        <li><strong>The queue skips a song.</strong> With automatic advancement enabled, a <code>trackEnd</code> listener can observe the transition without calling <code>stop()</code> or <code>play()</code> a second time.</li>
+        <li><strong>One server stays silent.</strong> Include <code>player.guildId</code> and the node identifier in your logs. If a start prints but the channel gets no message, inspect the channel lookup, permissions, and rejected send. If no track starts, check <code>nodeError</code> and <code>trackError</code>, then follow <a href="/troubleshooting">troubleshooting</a>.</li>
+      </ul>
+    </article>
+
+    <article id="configuration" data-group="Guides" hidden>
+      <h1>Node configuration</h1>
+      <p class="lead">Configure node selection, request timeouts, and resource limits for your bot.</p>
+      <h2 id="configuration-multiple-nodes">Connect multiple nodes</h2>
+      <p>Start with one node. Add a second when you need another server to share the playback load or take over during recovery. The example below uses the discord.js starter’s shard callback. For another client, reuse the <a href="/quickstart/existing">gateway callback from quickstart</a>. Set each node's host, password, and optional port in the manager. Give each node a distinct identifier. Pass a hostname without a URL scheme and set <code>useSSL: true</code> when the endpoint uses TLS.</p>
+      <pre data-lang="JavaScript"><code><span class="kw">const</span> { Manager, UseNodeOptions } = require(<span class="str">"pulsifyy"</span>);
+
+<span class="kw">const</span> manager = new Manager({
+  nodes: [
+    { identifier: <span class="str">"main"</span>, host: <span class="str">"127.0.0.1"</span>, port: <span class="num">2333</span>, password: process.env.LAVALINK_PASSWORD },
+    { identifier: <span class="str">"backup"</span>, host: <span class="str">"127.0.0.1"</span>, port: <span class="num">2334</span>, password: process.env.LAVALINK_PASSWORD },
+  ],
+  useNode: UseNodeOptions.LeastPlayers,
+  send(guildId, payload) {
+    client.guilds.cache.get(guildId)?.shard.send(payload);
+  },
+});</code></pre>
+      <p>Use <code>UseNodeOptions.LeastLoad</code> for CPU-based selection, or set <code>enablePriorityMode</code> and each node's <code>nodePriority</code> for weighted selection. Configure each node's sources and plugins before directing players to it.</p>
+      <h2 id="configuration-limits">Tune timeouts, caching, and queues</h2>
+      <div class="table-scroll"><table>
+        <thead><tr><th scope="col">Option</th><th scope="col">Behavior</th></tr></thead>
+        <tbody>
+          <tr><td><code>apiRequestTimeoutMs</code></td><td>Bounds requests to the Lavalink node.</td></tr>
+          <tr><td><code>maxRetryAttempts</code>, <code>retryDelayMs</code></td><td>Configure how the node reconnects.</td></tr>
+          <tr><td><code>trackCacheMaxEntries</code>, <code>trackCacheTtlMs</code></td><td>Limit manager search caching. Set either to zero to disable it.</td></tr>
+          <tr><td><code>maxQueueSize</code>, <code>maxPreviousTracks</code></td><td>Limit queued and previously played tracks per guild.</td></tr>
+          <tr><td><code>playerInactivityTimeoutMs</code></td><td>Clears idle players after the configured interval. Zero disables it.</td></tr>
+        </tbody>
+      </table></div>
+      <p>Continue to <a href="/recovery">Session recovery</a> to persist player state and configure resuming.</p>
+    </article>
+
+    <article id="recovery" data-group="Guides" hidden>
+      <h1>Session recovery</h1>
+      <p class="lead">Resume Lavalink sessions and restore playback state after a disconnect.</p>
+      <h2 id="recovery-enable">Enable resuming on a node</h2>
+      <p>Add <code>enableSessionResumeOption</code> to the node in your manager options. <code>sessionTimeoutMs</code> controls how long Lavalink retains the session after a disconnect.</p>
+      <pre data-lang="JavaScript"><code><span class="kw">const</span> nodes = [{
+  identifier: <span class="str">"main"</span>,
+  host: <span class="str">"127.0.0.1"</span>,
+  port: <span class="num">2333</span>,
+  password: process.env.LAVALINK_PASSWORD,
+  enableSessionResumeOption: <span class="kw">true</span>,
+  sessionTimeoutMs: <span class="num">60</span>_000,
+}];</code></pre>
+      <p>Pulsifyy first attempts to resume on the same node. If that session survives, playback stays in place. A fresh session can restore saved players and request new voice connections. If reconnects are exhausted, Pulsifyy tries other ready nodes.</p>
+      <h2 id="recovery-persist">Persist state across restarts</h2>
+      <p>Keep <code>sessionDataPath</code> on a persistent location and use the same bot and cluster IDs when calling <code>manager.init(clientId, clusterId)</code> after a restart. The default storage root is <code>pulsify/</code>, with a fallback to an existing <code>magmastream/</code> directory.</p>
+      <p>Await <code>manager.handleShutdown()</code> before your process exits. Keep saved session data private and check the <a href="/troubleshooting">troubleshooting guide</a> if playback fails to recover.</p>
+    </article>
+
+    <article id="api" data-group="Reference" hidden>
+      <h1>API reference</h1>
+      <p class="lead">Find the main Pulsifyy classes, option types, and entry points.</p>
+      <h2 id="api-imports">Import Pulsifyy</h2>
+      <p>The package supports ES modules and CommonJS. Use the import style already used by your bot.</p>
+      <pre data-lang="JavaScript"><code><span class="comment">// ES modules</span>
+<span class="kw">import</span> { Manager, SearchPlatform } <span class="kw">from</span> <span class="str">"pulsifyy"</span>;</code></pre>
+      <pre data-lang="JavaScript"><code><span class="comment">// CommonJS</span>
+<span class="kw">const</span> { Manager, SearchPlatform } = require(<span class="str">"pulsifyy"</span>);</code></pre>
+      <h2 id="api-typescript">TypeScript declarations</h2>
+      <p>Pulsifyy ships its own declarations. They reference discord.js types for users and messages. If TypeScript checks dependency declarations and reports <code>Cannot find module 'discord.js'</code>, add discord.js as a development dependency. For a Node.js 22 project, use the command below to install it with matching Node types. Your runtime can continue using your chosen Discord client.</p>
+      <pre data-lang="TypeScript setup for Node.js 22"><code>npm install -D discord.js@14 @types/node@22</code></pre>
+      <h2 id="api-classes">Main classes</h2>
+      <div class="table-scroll"><table>
+        <thead><tr><th scope="col">Export</th><th scope="col">Usage</th></tr></thead>
+        <tbody>
+          <tr><td><code>Manager</code></td><td>Initialize Lavalink connections, create players, and search tracks.</td></tr>
+          <tr><td><code>Player</code></td><td>Control playback and the voice connection for a guild.</td></tr>
+          <tr><td><code>Queue</code></td><td>Manage the current, upcoming, and previous tracks on a player.</td></tr>
+          <tr><td><code>Filters</code></td><td>Apply equalizer, timescale, and other supported effects.</td></tr>
+          <tr><td><code>Node</code></td><td>Represent a Lavalink connection and its connection state.</td></tr>
+        </tbody>
+      </table></div>
+      <p>Read the <a href="https://github.com/ItzRandom23/Pulsify/blob/main/dist/index.d.ts">full TypeScript declarations</a> for method signatures and options, or refer to <a href="/configuration">Node configuration</a> and <a href="/events">Events and listeners</a> for examples.</p>
+    </article>
+
+    <article id="troubleshooting" data-group="Reference" hidden>
+      <h1>Troubleshooting</h1>
+      <p class="lead">Diagnose connection, playback, and search problems before reporting an issue.</p>
+      <h2 id="troubleshooting-common">Common problems</h2>
+      <div class="table-scroll"><table>
+        <thead><tr><th scope="col">Symptom</th><th scope="col">What to check</th></tr></thead>
+        <tbody>
+          <tr><td>No available nodes</td><td>Wait for <code>nodeConnect</code> and verify the node host, port, password, TLS, and firewall.</td></tr>
+          <tr><td>Bot ignores <code>!play</code></td><td>Enable Message Content Intent in Discord and the client. Confirm the bot can view and send messages in the channel.</td></tr>
+          <tr><td>Bot joins and stays silent</td><td>Forward raw Discord events to <code>manager.updateVoiceState()</code>. Check Guild Voice States intent, Connect and Speak permissions, and Lavalink track errors.</td></tr>
+          <tr><td>Search returns no tracks</td><td>Enable the requested source on Lavalink and check any required plugin credentials.</td></tr>
+          <tr><td>Session fails to recover</td><td>Enable <a href="/recovery">session resuming</a>, keep the session storage directory, and check whether the server session survived.</td></tr>
+        </tbody>
+      </table></div>
+      <h2 id="troubleshooting-report">Report an issue</h2>
+      <p>Open an issue on <a href="https://github.com/ItzRandom23/Pulsify/issues">GitHub</a> with the versions of Node.js, Pulsifyy, your Discord client, Lavalink, and any relevant source plugin. Include the failing command or public track URL, the error message, and a small reproduction. Remove bot tokens, passwords, and provider credentials before sharing logs.</p>
+    </article>
+      <nav class="page-turns" aria-label="Article navigation">
+        <a rel="prev" hidden><svg class="icon" aria-hidden="true"><use href="#i-arrow"></use></svg><span><small>Previous page</small><strong></strong></span></a>
+        <a rel="next" hidden><span><small>Next page</small><strong></strong></span><svg class="icon" aria-hidden="true"><use href="#i-arrow"></use></svg></a>
+      </nav>
+      <footer class="article-footer"><span>Pulsifyy documentation</span><nav aria-label="External resources"><a href="https://github.com/ItzRandom23/Pulsify">GitHub</a><a href="https://docs.discord.com/developers/intro">Discord Developers</a></nav></footer>
+    </main>
+    <aside class="article-outline"><nav aria-label="On this page"><h2><svg class="icon" aria-hidden="true"><use href="#i-list"></use></svg>On this page</h2><ul id="outline-links"></ul></nav></aside>
+  </div>
+  <dialog class="modal mobile-menu" id="mobile-menu" aria-labelledby="menu-heading">
+    <div class="menu-head"><h2 id="menu-heading" class="menu-title">Documentation</h2><button type="button" class="icon-btn" data-close aria-label="Close navigation"><svg class="icon" aria-hidden="true"><use href="#i-x"></use></svg></button></div>
+    <nav data-menu-links aria-label="Documentation"></nav>
+  </dialog>
+  <dialog class="modal search-dialog" id="search-dialog" aria-labelledby="search-heading">
+    <div class="search-heading-row">
+      <h2 id="search-heading">Search documentation</h2>
+      <button type="button" class="search-close" data-close aria-label="Close search">Esc</button>
+    </div>
+    <label class="search-bar">
+      <svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
+      <input id="search-input" type="search" aria-label="Search documentation" placeholder="Search guides and methods…" autocomplete="off" enterkeyhint="search">
+    </label>
+    <p id="search-status" role="status"></p><ul class="search-results" id="search-results"></ul>
+  </dialog>
+  <script>
+(() => {
+  const root = document.documentElement;
+  const library = document.querySelector("#library");
+  const articles = [...library.querySelectorAll("article")];
+  const routesById = new Map();
+  const routesByPath = new Map();
+  const articleResults = [];
+  const searchIndex = [];
+
+  function registerRoute(id, path, page, target) {
+    const route = { path, page, target };
+    routesById.set(id, route);
+    routesByPath.set(path, route);
+  }
+
+  for (const article of articles) {
+    const heading = article.querySelector("h1");
+    const headings = [...article.querySelectorAll("h2[id]")];
+    const title = heading.textContent.trim();
+    const lead = article.querySelector(".lead")?.textContent.trim() ?? "";
+    const path = article.id === "introduction" ? "/" : `/${article.id}`;
+    const page = { article, heading, headings, title, path };
+    registerRoute(article.id, page.path, page, heading);
+    const articleResult = { id: article.id, title, context: lead, text: lead };
+    articleResults.push(articleResult);
+    searchIndex.push(articleResult);
+
+    headings.forEach((section, index) => {
+      const prefix = article.id + "-";
+      const slug = section.id.startsWith(prefix) ? section.id.slice(prefix.length) : section.id;
+      registerRoute(section.id, `/${article.id}/${slug}`, page, section);
+
+      const range = document.createRange();
+      range.setStartBefore(section);
+      if (headings[index + 1]) {
+        range.setEndBefore(headings[index + 1]);
+      } else {
+        range.setEnd(article, article.childNodes.length);
+      }
+
+      searchIndex.push({
+        id: section.id,
+        title: section.textContent.trim(),
+        context: title,
+        text: range.toString()
+      });
+    });
+  }
+
+  const guide = document.querySelector("#guide-nav");
+  const guideOrder = [...guide.querySelectorAll("a[data-nav]")];
+  const previousPageLink = document.querySelector('.page-turns [rel="prev"]');
+  const nextPageLink = document.querySelector('.page-turns [rel="next"]');
+  const menu = document.querySelector("#mobile-menu");
+  const menuToggle = document.querySelector("#menu-toggle");
+  const menuLinks = menu.querySelector("[data-menu-links]");
+  menuLinks.replaceChildren(...[...guide.childNodes].map((node) => node.cloneNode(true)));
+  const navLinks = [...document.querySelectorAll("a[data-nav]")];
+  const outline = document.querySelector("#outline-links");
+  const compactOutline = document.querySelector(".compact-outline");
+  let sectionLinks = [];
+  document.addEventListener("click", (event) => {
+    if (compactOutline.open && !compactOutline.contains(event.target)) compactOutline.open = false;
+  });
+  compactOutline.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      compactOutline.open = false;
+      compactOutline.querySelector("summary").focus();
+    }
+  });
+  const crumbGroup = document.querySelector("#crumb-group");
+  const crumbTitle = document.querySelector("#crumb-title");
+  let currentPage;
+  let renderedTarget;
+  let pinnedHeading;
+  let outlineFrame;
+
+  function idFromHash(hash) {
+    try {
+      return decodeURIComponent(hash.slice(1));
+    } catch {
+      return "";
+    }
+  }
+
+  function outlineLink(heading) {
+    const item = document.createElement("li");
+    const link = document.createElement("a");
+    link.href = routesById.get(heading.id).path;
+    link.textContent = heading.textContent.trim();
+    item.append(link);
+    return item;
+  }
+
+  function updateOutline() {
+    const scrollTop = window.scrollY;
+    if (pinnedHeading && Math.abs(pinnedHeading.scrollTop - scrollTop) > 1) pinnedHeading = undefined;
+
+    const offset = parseFloat(getComputedStyle(root).scrollPaddingTop);
+    let current = currentPage.headings.findLast((heading) => heading.getBoundingClientRect().top <= offset + 2) ?? currentPage.headings[0];
+    const hasScrolled = scrollTop > 0;
+    const atEnd = Math.ceil(scrollTop + window.innerHeight) >= root.scrollHeight;
+    if (hasScrolled && atEnd) current = currentPage.headings.at(-1);
+    if (pinnedHeading) current = pinnedHeading.heading;
+
+    const sectionPath = routesById.get(current?.id)?.path;
+    for (const link of sectionLinks) {
+      if (link.pathname === sectionPath) link.setAttribute("aria-current", "location");
+      else link.removeAttribute("aria-current");
+    }
+  }
+
+  function queueOutlineUpdate() {
+    cancelAnimationFrame(outlineFrame);
+    outlineFrame = requestAnimationFrame(updateOutline);
+  }
+
+  function setPageLink(link, destination) {
+    link.hidden = !destination;
+    if (destination) {
+      link.href = destination.pathname;
+      link.querySelector("strong").textContent = destination.textContent.trim();
+    } else {
+      link.removeAttribute("href");
+    }
+  }
+
+  function renderRoute({ page, target }, { moveFocus = false } = {}) {
+    renderedTarget = target;
+    pinnedHeading = undefined;
+    compactOutline.open = false;
+
+    if (currentPage !== page) {
+      for (const article of articles) article.hidden = article !== page.article;
+      currentPage = page;
+      crumbGroup.textContent = page.article.dataset.group ?? "";
+      crumbTitle.textContent = page.title;
+      document.title = `${page.title} · Pulsifyy`;
+      const pageIndex = guideOrder.findIndex((link) => link.pathname === page.path);
+      setPageLink(previousPageLink, guideOrder[pageIndex - 1]);
+      setPageLink(nextPageLink, guideOrder[pageIndex + 1]);
+      outline.replaceChildren(...page.headings.map(outlineLink));
+      compactOutline.querySelector("ul").replaceChildren(...page.headings.map(outlineLink));
+      sectionLinks = [...outline.querySelectorAll("a"), ...compactOutline.querySelectorAll("a")];
+
+      for (const link of navLinks) {
+        if (link.pathname === page.path) {
+          link.setAttribute("aria-current", "page");
+        } else {
+          link.removeAttribute("aria-current");
+        }
+      }
+    }
+
+    if (moveFocus) {
+      target.tabIndex = -1;
+      target.focus({ preventScroll: true });
+    }
+
+    if (target === page.heading) {
+      window.scrollTo({ top: 0, behavior: "instant" });
+    } else {
+      target.scrollIntoView({ block: "start", behavior: "instant" });
+      pinnedHeading = { heading: target, scrollTop: window.scrollY };
+    }
+    queueOutlineUpdate();
+  }
+
+  function syncLocation() {
+    const legacy = routesById.get(idFromHash(location.hash));
+    const path = location.pathname.replace(/\/+$/, "") || "/";
+    const route = legacy ?? routesByPath.get(path) ?? routesById.get("introduction");
+    if (legacy || location.pathname !== route.path) {
+      history.replaceState(history.state, "", route.path + location.search + (legacy ? "" : location.hash));
+    }
+    if (route.target !== renderedTarget) renderRoute(route, { moveFocus: Boolean(currentPage) });
+  }
+
+  document.querySelector(".skip").addEventListener("click", (event) => {
+    event.preventDefault();
+    library.focus({ preventScroll: true });
+    library.scrollIntoView({ block: "start" });
+  });
+
+  const darkPreference = matchMedia("(prefers-color-scheme: dark)");
+  const themeToggle = document.querySelector("#theme-toggle");
+  let themeChoice;
+  try {
+    const savedTheme = localStorage.getItem("pulsify-theme");
+    if (savedTheme === "light" || savedTheme === "dark") themeChoice = savedTheme;
+  } catch {
+    // The current tab can still change themes when storage is unavailable.
+  }
+
+  function updateTheme() {
+    const theme = themeChoice ?? (darkPreference.matches ? "dark" : "light");
+    root.dataset.theme = theme;
+    document.querySelector('meta[name="theme-color"]').content = theme === "dark" ? "#101512" : "#ffffff";
+    themeToggle.setAttribute("aria-pressed", String(theme === "dark"));
+    themeToggle.title = theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
+  }
+
+  themeToggle.addEventListener("click", () => {
+    themeChoice = root.dataset.theme === "dark" ? "light" : "dark";
+    updateTheme();
+    try {
+      localStorage.setItem("pulsify-theme", themeChoice);
+    } catch {
+      // Keep the choice for this tab even when it cannot be persisted.
+    }
+  });
+  darkPreference.addEventListener("change", updateTheme);
+  updateTheme();
+
+  const search = document.querySelector("#search-dialog");
+  const searchToggle = document.querySelector("#search-toggle");
+  if (/Mac|iPhone|iPad/.test(navigator.platform)) searchToggle.querySelector("kbd").textContent = "⌘ K";
+  const searchInput = document.querySelector("#search-input");
+  const searchStatus = document.querySelector("#search-status");
+  const searchResults = document.querySelector("#search-results");
+  const dialogOpeners = new WeakMap();
+
+  function openDialog(dialog, toggle, focusTarget) {
+    if (dialog.open) return;
+    const opener = document.activeElement;
+    dialogOpeners.set(dialog, opener instanceof HTMLElement && opener !== document.body ? opener : toggle);
+    dialog.showModal();
+    toggle.setAttribute("aria-expanded", "true");
+    focusTarget?.focus();
+  }
+
+  for (const [dialog, toggle] of [[menu, menuToggle], [search, searchToggle]]) {
+    dialog.querySelector("[data-close]")?.addEventListener("click", () => dialog.close());
+    dialog.addEventListener("close", () => {
+      if (dialog.open) return;
+      toggle.setAttribute("aria-expanded", "false");
+      const opener = dialogOpeners.get(dialog);
+      dialogOpeners.delete(dialog);
+      if (opener?.isConnected) opener.focus({ preventScroll: true });
+    });
+    dialog.addEventListener("click", (event) => {
+      if (event.target !== dialog) return;
+      const bounds = dialog.getBoundingClientRect();
+      if (event.clientX < bounds.left || event.clientX > bounds.right ||
+          event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
+    });
+  }
+
+  menuToggle.addEventListener("click", () => openDialog(menu, menuToggle, menu.querySelector("[data-close]")));
+
+  function resultItem({ id, title, context }) {
+    const item = document.createElement("li");
+    const link = document.createElement("a");
+    const label = document.createElement("strong");
+    const summary = document.createElement("small");
+    link.href = routesById.get(id).path;
+    label.textContent = title;
+    summary.textContent = context;
+    link.append(label);
+    if (context) link.append(summary);
+    item.append(link);
+    return item;
+  }
+
+  function renderSearch() {
+    const query = searchInput.value.trim().toLowerCase();
+    const words = query.split(/\s+/).filter(Boolean);
+    let matches = articleResults;
+
+    if (query) {
+      const ranked = [];
+      for (const entry of searchIndex) {
+        const title = entry.title.toLowerCase();
+        const text = `${title} ${entry.text}`.toLowerCase();
+        if (!words.every((word) => text.includes(word))) continue;
+        let rank = 0;
+        if (title === query) rank = 3;
+        else if (title.includes(query)) rank = 2;
+        else if (words.every((word) => title.includes(word))) rank = 1;
+        ranked.push({ entry, rank });
+      }
+      ranked.sort((first, second) => second.rank - first.rank);
+      matches = ranked.map(({ entry }) => entry);
+    }
+
+    if (!query) searchStatus.textContent = "Jump to an article";
+    else if (!matches.length) searchStatus.textContent = "No results found.";
+    else searchStatus.textContent = `${matches.length} ${matches.length === 1 ? "result" : "results"}`;
+    searchResults.replaceChildren(...matches.map(resultItem));
+    searchResults.scrollTop = 0;
+  }
+
+  function openSearch() {
+    if (search.open) return;
+    searchInput.value = "";
+    renderSearch();
+    openDialog(search, searchToggle, searchInput);
+    searchResults.scrollTop = 0;
+  }
+
+  searchToggle.addEventListener("click", openSearch);
+  searchInput.addEventListener("input", renderSearch);
+  searchResults.addEventListener("focusin", (event) => {
+    const link = event.target.closest("a");
+    if (link) link.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
+  search.addEventListener("keydown", (event) => {
+    if (event.isComposing) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      search.close();
+      return;
+    }
+    const links = [...searchResults.querySelectorAll("a")];
+    if (!links.length) return;
+    if (event.target === searchInput && event.key === "Enter") {
+      event.preventDefault();
+      links[0].click();
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    const index = links.indexOf(document.activeElement);
+    if (event.target !== searchInput && index === -1) return;
+    event.preventDefault();
+
+    if (index === -1) links[direction === 1 ? 0 : links.length - 1].focus();
+    else if (index + direction === -1) searchInput.focus();
+    else links[Math.min(index + direction, links.length - 1)].focus();
+  });
+
+  searchInput.form?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    searchResults.querySelector("a")?.click();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.isComposing || event.altKey || event.shiftKey || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "k") return;
+    event.preventDefault();
+    if (menu.open) menu.close();
+    openSearch();
+  });
+
+  document.addEventListener("click", (event) => {
+    if (event.defaultPrevented || event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const link = event.target instanceof Element ? event.target.closest("a[href]") : null;
+    if (!link || link.origin !== location.origin || link.target || link.hash || link.hasAttribute("download")) return;
+    const route = routesByPath.get(link.pathname);
+    if (!route) return;
+    event.preventDefault();
+
+    const dialog = link.closest("dialog[open]");
+    if (dialog) {
+      dialogOpeners.delete(dialog);
+      dialog.close();
+    }
+    const path = route.path + (link.search || location.search);
+    if (location.pathname + location.search + location.hash !== path) history.pushState(null, "", path);
+    renderRoute(route, { moveFocus: true });
+  });
+
+  for (const pre of library.querySelectorAll("pre")) {
+    const code = pre.querySelector("code") ?? pre;
+    const block = document.createElement("div");
+    const bar = document.createElement("div");
+    const language = document.createElement("span");
+    const button = document.createElement("button");
+    block.className = "code-block";
+    bar.className = "code-bar";
+    language.textContent = pre.dataset.lang ?? code.dataset.lang ?? "Text";
+    button.className = "copy-code";
+    button.type = "button";
+    button.setAttribute("aria-live", "polite");
+    button.textContent = "Copy";
+    bar.append(language, button);
+    pre.before(block);
+    block.append(bar, pre);
+
+    let reset;
+    button.addEventListener("click", async () => {
+      clearTimeout(reset);
+      try {
+        await navigator.clipboard.writeText(code.textContent);
+        button.dataset.copied = "true";
+        button.textContent = "Copied";
+        button.removeAttribute("title");
+      } catch {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(code);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        delete button.dataset.copied;
+        button.textContent = "Selected";
+        button.title = "Code selected. Use your copy shortcut.";
+      }
+      reset = setTimeout(() => {
+        delete button.dataset.copied;
+        button.textContent = "Copy";
+        button.removeAttribute("title");
+      }, 2000);
+    });
+  }
+
+  // Add a keyboard stop only when a table or example actually needs horizontal scrolling.
+  const regionNames = new Map();
+  function syncScrollRegion(element) {
+    if (element.clientWidth && element.scrollWidth > element.clientWidth + 1) {
+      element.tabIndex = 0;
+      element.setAttribute("role", "region");
+      element.setAttribute("aria-label", regionNames.get(element));
+    } else {
+      element.removeAttribute("tabindex");
+      element.removeAttribute("role");
+      element.removeAttribute("aria-label");
+    }
+  }
+  const regionObserver = new ResizeObserver(entries => {
+    for (const { target } of entries) syncScrollRegion(target);
+  });
+  for (const article of articles) {
+    let section = article.querySelector("h1").textContent;
+    for (const part of article.querySelectorAll("h2, .table-scroll, pre")) {
+      if (part.matches("h2")) {
+        section = part.textContent;
+      } else {
+        const kind = part.matches("pre") ? (part.dataset.lang || "Code") + " example" : "table";
+        regionNames.set(part, section + ", " + kind);
+        regionObserver.observe(part);
+      }
+    }
+  }
+  document.fonts.ready.then(() => { for (const element of regionNames.keys()) syncScrollRegion(element); });
+
+  history.scrollRestoration = "manual";
+  window.addEventListener("popstate", syncLocation);
+  window.addEventListener("hashchange", syncLocation);
+  window.addEventListener("scroll", queueOutlineUpdate, { passive: true });
+  window.addEventListener("resize", queueOutlineUpdate);
+  syncLocation();
+})();
+  </script>
+</body>
+</html>

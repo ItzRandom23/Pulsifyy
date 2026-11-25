@@ -22,6 +22,7 @@ var SponsorBlockSegment;
 })(SponsorBlockSegment || (exports.SponsorBlockSegment = SponsorBlockSegment = {}));
 const validSponsorBlocks = Object.values(SponsorBlockSegment).map((v) => v.toLowerCase());
 const { randomUUID } = require("node:crypto");
+const { setTimeout: delay } = require("node:timers/promises");
 const { inspect } = require("node:util");
 const { scopePath } = require("../utils/sessionData");
 function getEventTrackKey(eventTrack) {
@@ -214,6 +215,7 @@ class Node {
         this.ready = false;
         clearTimeout(this.reconnectTimeout);
         clearTimeout(this.readyTimeout);
+        clearTimeout(this.resumeEndTimer);
         clearInterval(this.heartbeat);
         try {
             await this.movePlayers(true);
@@ -230,15 +232,20 @@ class Node {
         const worker = async () => {
             for (const player of players) {
                 if (player.node !== this || player.destroyRequested) continue;
-                const target = this.manager.getFailoverNode(this);
-                try {
-                    if (target) await player.moveNode(target.options.identifier);
-                } catch (error) {
-                    this.error(error);
-                } finally {
-                    if (target) this.manager.releaseFailoverReservation(target);
+                const tried = new Set();
+                while (player.node === this && !player.destroyRequested) {
+                    const target = this.manager.getFailoverNode(this, tried);
+                    if (!target) break;
+                    tried.add(target);
+                    try {
+                        await player.moveNode(target.options.identifier);
+                    } catch (error) {
+                        this.error(error);
+                    } finally {
+                        this.manager.releaseFailoverReservation(target);
+                    }
                 }
-                if (destroyRemaining && player.node === this) {
+                if (destroyRemaining && player.node === this && !player.destroyRequested) {
                     try { await player.destroy(); } catch (error) { this.error(error); }
                 }
             }
@@ -291,6 +298,8 @@ class Node {
         this.readiness = undefined;
         this.socket = null;
         clearTimeout(this.readyTimeout);
+        clearTimeout(this.resumeEndTimer);
+        this.resumeEndTimer = undefined;
         clearInterval(this.heartbeat);
         if (this.destroyed) return;
         this.info = null;
@@ -339,6 +348,7 @@ class Node {
         }
         if (!live()) return;
         this.ready = true;
+        this.resumeEndTimer = payload.resumed ? this.manager.scheduleResumedEnds(this) : undefined;
         this.reconnectAttempts = 0;
         this.manager.emit(Manager_1.ManagerEventTypes.NodeConnect, this);
     }
@@ -382,8 +392,13 @@ class Node {
         const player = this.manager.players.get(payload.guildId);
         if (!player || player.destroyRequested || (player.node !== this && player.movingTo !== this)) return;
         if (payload.op === "playerUpdate") {
-            if (player.node === this && Number.isFinite(payload.state?.position) && !player.pendingOperations) player.position = payload.state.position;
-            if (payload.state?.connected === true) player.voiceRecoveryAttempted = false;
+            if (player.node !== this) return;
+            if (Number.isFinite(payload.state?.position) && !player.pendingOperations) player.position = payload.state.position;
+            if (payload.state?.connected === true) {
+                clearTimeout(player.voiceRecoveryTimer);
+                player.voiceRecoveryTimer = undefined;
+                player.voiceRecoveryAttempted = false;
+            }
         } else if (payload.op === "event") {
             await this.handleEvent(payload);
         }
@@ -403,13 +418,29 @@ class Node {
             const track = player.queue.current;
             const type = payload.type;
             if (["TrackStartEvent", "TrackEndEvent", "TrackStuckEvent", "TrackExceptionEvent"].includes(type)) {
-                if (!track || getEventTrackKey(payload.track) !== track.track) return;
+                if (!track) return;
+                // Lavalink can re-encode a track with its updated playback position.
                 const eventId = payload.track?.userData?.pulsifyPlaybackId;
-                if (player.playbackId && eventId !== player.playbackId) return;
+                if (player.playbackId || eventId) {
+                    if (eventId !== player.playbackId) return;
+                } else if (getEventTrackKey(payload.track) !== track.track) {
+                    return;
+                }
             }
             switch (type) {
                 case "TrackStartEvent": this.trackStart(player, track, payload); break;
-                case "TrackEndEvent": await this.trackEnd(player, track, payload); break;
+                case "TrackEndEvent": {
+                    const playbackId = player.playbackId;
+                    const terminal = payload.reason !== Utils_1.TrackEndReasonTypes.Replaced &&
+                        Object.values(Utils_1.TrackEndReasonTypes).includes(payload.reason);
+                    if (terminal) player.pendingResumedEnd = undefined;
+                    try {
+                        await this.trackEnd(player, track, payload);
+                    } finally {
+                        if (terminal) player.completeStop(playbackId, track);
+                    }
+                    break;
+                }
                 case "TrackStuckEvent": await this.trackStuck(player, track, payload); break;
                 case "TrackExceptionEvent": await this.trackError(player, track, payload); break;
                 case "WebSocketClosedEvent": this.socketClosed(player, payload); break;
@@ -446,6 +477,8 @@ class Node {
             return;
         }
         const oldPlayer = { ...player };
+        const socket = this.socket;
+        const playbackId = player.playbackId;
         player.playing = player.paused = false;
         player.position = 0;
         player.lastActivityAt = Date.now();
@@ -453,8 +486,8 @@ class Node {
         player.nowPlayingMessage = undefined;
         if (message?.deletable) Promise.resolve().then(() => message.delete()).catch(() => { });
 
-        if (reason === reasons.LoadFailed && await this.retryTrack(player, track)) return;
-        if (player.destroyRequested || player.node !== this || player.queue.current !== track) return;
+        if (reason === reasons.LoadFailed && await this.retryTrack(player, track, playbackId, socket)) return;
+        if (!this.ownsPlayer(player, socket) || player.playbackId !== playbackId || player.queue.current !== track) return;
         player.set("trackFailureAttempts", 0);
         const history = player.queue.previous;
         if (history.at(-1)?.track !== track.track) {
@@ -463,7 +496,7 @@ class Node {
         }
         if (reason !== reasons.Finished || !player.trackRepeat) {
             const next = player.queue.shift() ?? null;
-            if (reason === reasons.Finished && player.queueRepeat) {
+            if (reason === reasons.Finished && (player.queueRepeat || player.dynamicRepeat)) {
                 if (next) player.queue.push(track);
                 player.queue.current = next ?? track;
             } else {
@@ -475,40 +508,73 @@ class Node {
         this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, player, {
             changeType: Manager_1.PlayerStateEventTypes.TrackChange, details: { changeType: "end", track },
         });
-        if (player.destroyRequested || player.playbackId || player.pendingOperations) return;
-        if (reason === reasons.Cleanup) return;
-        if (player.queue.current) {
-            if (this.manager.options.playNextOnEnd) await player.play();
-            return;
-        }
-        await this.queueEnd(player, track, payload);
+        if (reason === reasons.Cleanup || !this.ownsPlayer(player, socket)) return;
+        const empty = await player.runOperation(async () => {
+            if (!this.ownsPlayer(player, socket) || player.playbackId) return false;
+            const next = player.queue.current;
+            if (!next) return true;
+            if (this.manager.options.playNextOnEnd) await this.startQueuedTrack(player, next, socket);
+            return false;
+        });
+        if (empty && this.ownsPlayer(player, socket)) await this.queueEnd(player, track, payload);
     }
 
-    async retryTrack(player, track) {
-        const attempts = player.get("trackFailureAttempts") ?? 0;
-        if (attempts >= this.manager.options.trackRetryAttempts) return false;
-        player.set("trackFailureAttempts", attempts + 1);
-        try { await player.play(track); return true; }
-        catch (error) { this.error(error); return false; }
+    ownsPlayer(player, socket) {
+        return !player.destroyRequested && player.node === this && this.socket === socket;
+    }
+
+    async startQueuedTrack(player, track, socket) {
+        const playbackId = randomUUID();
+        const retries = this.manager.options.trackRetryAttempts;
+        for (let attempt = 0; this.ownsPlayer(player, socket) && !player.playbackId && player.queue.current === track; attempt++) {
+            try {
+                // A failed response may have followed a successful PATCH. Keep its ID
+                // and let Lavalink preserve existing playback when retrying.
+                await player.playTrack(track, { noReplace: attempt > 0 }, playbackId);
+                if (player.playbackId !== playbackId) this.error(new Error("Lavalink already had a different track when advancing the queue."));
+                return;
+            } catch (error) {
+                const retryable = error.name === "LavalinkRequestError" &&
+                    (error.status === undefined || error.status === 408 || error.status === 429 || error.status >= 500);
+                if (attempt >= retries || !retryable) {
+                    this.error(error);
+                    return;
+                }
+                await delay(Math.min(25 * 2 ** attempt, 250));
+            }
+        }
+    }
+
+    async retryTrack(player, track, playbackId, socket) {
+        return player.runOperation(async () => {
+            if (!this.ownsPlayer(player, socket) || player.playbackId !== playbackId || player.queue.current !== track) return false;
+            const attempts = player.get("trackFailureAttempts") ?? 0;
+            if (attempts >= this.manager.options.trackRetryAttempts) return false;
+            player.set("trackFailureAttempts", attempts + 1);
+            try { await player.playTrack(track); return true; }
+            catch (error) { this.error(error); return false; }
+        });
     }
 
     async queueEnd(player, track, payload) {
-        if (player.destroyRequested || player.queue.current || player.queue.length || player.get("queueEndInProgress")) return;
+        const socket = this.socket;
+        const isIdle = () => this.ownsPlayer(player, socket) && !player.playbackId && !player.queue.current && !player.queue.length;
+        if (!isIdle() || player.get("queueEndInProgress")) return;
         player.set("queueEndInProgress", true);
         try {
             if (player.autoplayEnabled && (payload.reason === Utils_1.TrackEndReasonTypes.Finished ||
                 payload.reason === Utils_1.TrackEndReasonTypes.LoadFailed)) {
                 for (let attempt = 0; attempt < player.autoplayTries; attempt++) {
-                    if (player.destroyRequested || player.queue.current || player.queue.length || !player.autoplayEnabled) return;
+                    if (!isIdle() || !player.autoplayEnabled) return;
                     try {
                         if (!player.isAutoplayTrack(track) || !player.autoplayPool.length) {
                             await player.refreshAutoplayPool(track, player.autoplayPool.length > 0);
                         }
-                        if (await player.consumeNextAutoplayTrack()) return;
+                        if (isIdle() && await player.consumeNextAutoplayTrack()) return;
                     } catch (error) { this.error(error); }
                 }
             }
-            if (player.destroyRequested || player.queue.current || player.queue.length) return;
+            if (!isIdle()) return;
             player.clearAutoplayPool();
             this.manager.emit(Manager_1.ManagerEventTypes.QueueEnd, player, track, payload);
         } finally {
@@ -548,9 +614,12 @@ class Node {
      * @protected
      */
     async trackStuck(player, track, payload) {
+        const socket = this.socket;
+        const playbackId = player.playbackId;
         if (await this.recoverTrack(player, track, payload)) return;
+        if (!this.ownsPlayer(player, socket) || player.playbackId !== playbackId || player.queue.current !== track) return;
         this.manager.emit(Manager_1.ManagerEventTypes.TrackStuck, player, track, payload);
-        if (!player.destroyRequested && player.queue.current === track) await player.stop();
+        if (this.ownsPlayer(player, socket)) await player.stopCurrentPlayback(playbackId, track, this, socket);
     }
 
     async trackError(player, track, payload) {
@@ -568,11 +637,16 @@ class Node {
     socketClosed(player, payload) {
         this.manager.emit(Manager_1.ManagerEventTypes.SocketClosed, player, payload);
         if (!player.voiceChannelId || player.destroyRequested || player.voiceRecoveryTimer || player.voiceRecoveryAttempted) return;
+        const socket = this.socket;
         player.voiceRecoveryAttempted = true;
-        player.voiceRecoveryTimer = setTimeout(() => {
+        player.voiceRecoveryTimer = setTimeout(async () => {
             player.voiceRecoveryTimer = undefined;
-            if (player.node !== this || !this.connected || player.destroyRequested) return;
-            player.resyncState().catch(error => this.error(error));
+            try {
+                if (this.ownsPlayer(player, socket) && this.connected && await player.resyncState()) return;
+            } catch (error) {
+                this.error(error);
+            }
+            if (!player.voiceRecoveryTimer && player.node === this) player.voiceRecoveryAttempted = false;
         }, 1500);
         player.voiceRecoveryTimer.unref();
     }

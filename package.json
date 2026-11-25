@@ -1,6 +1,6 @@
 {
 	"name": "pulsifyy",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "A Lavalink v4 client for Discord music bots with autoplay, filters, and session recovery.",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
@@ -10,6 +10,7 @@
 	],
 	"scripts": {
 		"build": "node scripts/check.js && npm run typecheck",
+		"docs": "node scripts/serve-docs.mjs",
 		"lint": "eslint . --max-warnings 0",
 		"typecheck": "tsc --noEmit",
 		"test": "node --test \"test/*.test.js\"",
@@ -40,6 +41,7 @@
 		"discord",
 		"music",
 		"audio",
+		"pulsifyy",
 		"pulsify"
 	],
 	"repository": {
@@ -48,7 +50,7 @@
 	},
 	"author": "Itz Random",
 	"license": "Apache-2.0",
-	"homepage": "https://github.com/ItzRandom23/Pulsify#readme",
+	"homepage": "https://pulsifyy.vercel.app/",
 	"bugs": {
 		"url": "https://github.com/ItzRandom23/Pulsify/issues"
 	},

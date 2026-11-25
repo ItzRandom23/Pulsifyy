@@ -14,7 +14,7 @@ const result = await manager.search("song name", requester, ["soundcloud"]);
 const player = manager.players.get(guildId);
 ```
 
-Use the exported `SearchPlatform` values to select a search provider. Availability and playback depend on the sources and plugins enabled on your Lavalink server. Pulsify forwards direct HTTP(S) links to Lavalink. [Supported sources and plugin setup](../README.md#supported-sources)
+Use the exported `SearchPlatform` values to select a search provider. Call `player.search(...)` to search on that player's assigned node. Availability and playback depend on the sources and plugins enabled on your Lavalink server. Pulsifyy forwards direct HTTP(S) links to Lavalink. [Supported sources and plugin setup](../README.md#supported-sources)
 
 ## Player controls
 
@@ -39,6 +39,8 @@ player.setAutoplay(false);
 ```
 
 Autoplay requires available recommendation sources. Configure `autoPlaySearchPlatforms` with values from the exported `AutoPlayPlatform` enum and enable corresponding sources on Lavalink.
+
+Filters and presets require the corresponding effects to be enabled on your Lavalink node. `await player.filters.clearFilters()` resets all effects and restores the volume from before the loud preset if it is active. Stock Lavalink v4 provides no reverb effect. `setReverb()` rejects non-null settings, and the vaporwave and demon presets apply their supported effects.
 
 ## Events
 
@@ -66,14 +68,14 @@ Event emitters do not await promises returned by your listeners. Catch errors in
 | `maxQueueSize`, `maxPreviousTracks` | Defaults to 10,000 current and upcoming tracks per guild and 20 previous tracks. |
 | `playerInactivityTimeoutMs` | Clears idle players after 300,000 ms by default. Set to 0 to disable. |
 | `trackRetryAttempts`, `trackErrorRecovery` | Retry a track that fails to load twice by default. A callback can recover an exception or stuck track by replacing playback and returning true. |
-| `trackPartial` | Keep the configured track fields. Pulsify always keeps the encoded track. |
+| `trackPartial` | Keep the configured track fields. Pulsifyy always keeps the encoded track. |
 | `lastFmApiKey`, `autoPlaySearchPlatforms` | Configure optional recommendations. Sources and plugins must be available on the node. |
 
-Use `manager.get`, `manager.destroy`, `manager.createNode`, and `manager.destroyNode` to look up or manage live objects. `Manager.decodeTrack(s)` returns decoded Lavalink metadata. `manager.loadPlaylistInChunks` yields to the event loop between inserts. Connect only after `nodeConnect` and await controls that change remote state. Use `player.previous()`, `restart()`, `stop(amount)`, and the filter API in addition to the basic commands above.
+Use `manager.get`, `manager.destroy`, `manager.createNode`, and `manager.destroyNode` to look up or manage live objects. `Manager.decodeTrack(s)` returns decoded Lavalink metadata. `manager.loadPlaylistInChunks` yields between batches while preparing the list and appends all tracks together once the queue has room for them. Connect only after `nodeConnect` and await controls that change remote state. Use `player.previous()`, `restart()`, `stop(amount)`, and the filter API in addition to the basic commands above.
 
 ## Session recovery
 
-Set `enableSessionResumeOption` on the node. `sessionTimeoutMs` defaults to 60,000 ms. During a reconnect, Pulsify first attempts to resume on the same node. When the previous session survives, current playback stays in place. For a fresh session, Pulsify can reapply in-memory state or reconstruct recent saved players and request fresh voice connections. If reconnects are exhausted, Pulsify tries other ready nodes and disposes players it could not move.
+Set `enableSessionResumeOption` on the node. `sessionTimeoutMs` defaults to 60,000 ms. During a reconnect, Pulsifyy first attempts to resume on the same node. When the previous session survives, current playback stays in place. For a fresh session, Pulsifyy can reapply in-memory state or reconstruct recent saved players and request fresh voice connections. If reconnects are exhausted, Pulsifyy tries other ready nodes and disposes players it could not move.
 
 Call `await manager.handleShutdown()` before exiting. Configure bot or cluster-specific persistence with `sessionDataPath` and a stable `manager.init(clientId, clusterId)`. The default data root is `pulsify/`, or existing `magmastream/` if there is no `pulsify/` directory. New files are scoped by bot and cluster. A legacy player file can migrate when Lavalink confirms the session and guild. Treat old snapshots as sensitive.
 

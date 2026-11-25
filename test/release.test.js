@@ -8,7 +8,7 @@ const pkg = require("../package.json");
 
 test("release metadata and public exports", () => {
   assert.equal(pkg.name, "pulsifyy");
-  assert.equal(pkg.version, "0.1.1");
+  assert.equal(pkg.version, "0.1.2");
   const api = require("../dist");
   for (const name of ["Manager", "Player", "Node", "Queue", "TrackUtils", "Filters"]) {
     assert.ok(api[name], `Missing export ${name}`);

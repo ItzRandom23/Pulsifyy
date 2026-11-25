@@ -2,10 +2,22 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AvailableFilters = exports.Filters = void 0;
 const filtersEqualizers_1 = require("../utils/filtersEqualizers");
-const filterProperties = new Set([
-    "distortion", "equalizer", "karaoke", "rotation", "timescale", "vibrato", "tremoloOptions",
-    "channelMix", "lowPass", "reverb", "volume", "bassBoostlevel",
-]);
+const Manager_1 = require("./Manager");
+const defaultFilterValues = {
+    distortion: null,
+    equalizer: [],
+    karaoke: null,
+    rotation: null,
+    timescale: null,
+    vibrato: null,
+    tremoloOptions: null,
+    channelMix: null,
+    lowPass: null,
+    reverb: null,
+    volume: 1.0,
+    bassBoostlevel: 0,
+};
+const boostedVolume = 200;
 
 class Filters {
     distortion;
@@ -22,61 +34,58 @@ class Filters {
     volume;
     bassBoostlevel;
     filtersStatus;
+    #volumeBeforeEarrape = null;
     constructor(player) {
-        this.distortion = null;
-        this.equalizer = [];
-        this.karaoke = null;
         this.player = player;
-        this.rotation = null;
-        this.timescale = null;
-        this.vibrato = null;
-        this.tremoloOptions = null;
-        this.channelMix = null;
-        this.lowPass = null;
-        this.reverb = null;
-        this.volume = 1.0;
-        this.bassBoostlevel = 0;
-        // Initialize filter status
-        this.filtersStatus = Object.values(AvailableFilters).reduce((acc, filter) => {
-            acc[filter] = false;
-            return acc;
-        }, {});
+        Object.assign(this, structuredClone(defaultFilterValues));
+        this.filtersStatus = Object.fromEntries(Object.values(AvailableFilters).map(filter => [filter, false]));
     }
-    /**
-     * Updates the player's audio filters.
-     *
-     * This method sends a request to the player's node to update the filter settings
-     * based on the current properties of the `Filters` instance. The filters include
-     * distortion, equalizer, karaoke, rotation, timescale, vibrato, and volume. Once
-     * the request is sent, it ensures that the player's audio output reflects the
-     * changes in filter settings.
-     *
-     * @returns {Promise<this>} - Returns a promise that resolves to the current instance
-     * of the Filters class for method chaining.
-     */
-    payload() {
-        const { distortion, equalizer, karaoke, rotation, timescale, vibrato, tremoloOptions, channelMix, lowPass, reverb, volume } = this;
-        return { distortion, equalizer, karaoke, rotation, timescale, vibrato, tremolo: tremoloOptions, channelMix, lowPass, reverb, volume };
+    #filterSettings(values = this) {
+        const { distortion, equalizer, karaoke, rotation, timescale, vibrato, tremoloOptions, channelMix, lowPass, volume } = values;
+        return { distortion, equalizer, karaoke, rotation, timescale, vibrato, tremoloOptions, channelMix, lowPass, volume };
+    }
+
+    payload(values = this) {
+        // Lavalink replaces the filter chain and rejects any disabled filter sent in the payload.
+        const { equalizer, volume, tremoloOptions, ...effects } = this.#filterSettings(values);
+        const filters = Object.fromEntries(Object.entries({ ...effects, tremolo: tremoloOptions })
+            .filter(([, value]) => value != null));
+        if (equalizer?.some(band => band?.gain !== 0)) filters.equalizer = equalizer;
+        if (volume != null && volume !== defaultFilterValues.volume) filters.volume = volume;
+        return filters;
     }
 
     snapshot() {
-        const { tremolo, ...filters } = this.payload();
-        return structuredClone({ ...filters, tremoloOptions: tremolo, bassBoostlevel: this.bassBoostlevel, filterStatus: this.filtersStatus });
+        return structuredClone({
+            ...this.#filterSettings(), bassBoostlevel: this.bassBoostlevel,
+            filterStatus: this.filtersStatus, volumeBeforeEarrape: this.#volumeBeforeEarrape,
+        });
     }
 
     restore(snapshot) {
-        for (const key of filterProperties) {
-            if (Object.hasOwn(snapshot, key)) this[key] = structuredClone(snapshot[key]);
+        for (const key of Object.keys(defaultFilterValues)) {
+            if (key !== "reverb" && Object.hasOwn(snapshot, key)) this[key] = structuredClone(snapshot[key]);
         }
         for (const key of Object.values(AvailableFilters)) {
             if (typeof snapshot.filterStatus?.[key] === "boolean") this.filtersStatus[key] = snapshot.filterStatus[key];
         }
+        // Older snapshots could give multiple presets ownership of one field.
+        const active = Object.entries(effectProperties).filter(([effect]) => this.filtersStatus[effect]);
+        for (const [effect, fields] of active) {
+            if (active.some(([other, otherFields]) => other !== effect && fields.some(field => otherFields.includes(field)))) {
+                this.filtersStatus[effect] = false;
+            }
+        }
+        this.reverb = null;
+        this.filtersStatus[AvailableFilters.SetReverb] = false;
+        const previousVolume = snapshot.volumeBeforeEarrape;
+        this.#volumeBeforeEarrape = Number.isInteger(previousVolume) && previousVolume >= 0 && previousVolume <= 1000
+            ? previousVolume : null;
     }
 
     async updateFilters() {
-        const filters = structuredClone(this.payload());
         await this.player.runOperation(() => this.player.node.rest.updatePlayer({
-            data: { filters }, guildId: this.player.guildId,
+            data: { filters: structuredClone(this.payload()) }, guildId: this.player.guildId,
         }));
         return this;
     }
@@ -91,23 +100,72 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async applyFilter(filter, updateFilters = true) {
-        if (!filterProperties.has(filter.property)) throw new TypeError("Unknown audio filter property.");
-        this[filter.property] = filter.value;
-        if (updateFilters) {
-            await this.updateFilters();
+        return this.applyFilters({ [filter.property]: filter.value }, updateFilters);
+    }
+    async applyFilters(filters, updateFilters = true) {
+        for (const key of Object.keys(filters)) {
+            if (!Object.hasOwn(defaultFilterValues, key)) throw new TypeError("Unknown audio filter property.");
+        }
+        if (filters.reverb != null) throw new RangeError("Reverb is not a built-in Lavalink v4 filter.");
+        return this.#updateFields(structuredClone(filters), { sendFilters: updateFilters });
+    }
+
+    #updateFields(requested, { flag, enabled, requireActive = false, sendFilters = true } = {}) {
+        return this.player.runOperation(async () => {
+            const statuses = { ...this.filtersStatus };
+            if (requireActive && !statuses[flag]) return this;
+
+            const changes = {};
+            for (const [effect, fields] of Object.entries(effectProperties)) {
+                if (effect === flag || !statuses[effect] || !fields.some(field => Object.hasOwn(requested, field))) continue;
+                statuses[effect] = false;
+                for (const field of fields) changes[field] = defaultFilterValues[field];
+            }
+            Object.assign(changes, requested);
+            if (flag) statuses[flag] = enabled;
+            return this.#commit(changes, statuses, { sendFilters });
+        });
+    }
+
+    #setFilter(flag, field, value) {
+        return this.#updateFields({ [field]: structuredClone(value) }, { flag, enabled: value !== null });
+    }
+
+    #togglePreset(flag, status, settings) {
+        const enabled = Boolean(status);
+        const changes = enabled ? settings : Object.fromEntries(
+            Object.keys(settings).map(field => [field, defaultFilterValues[field]]),
+        );
+        return this.#updateFields(changes, { flag, enabled, requireActive: !enabled });
+    }
+
+    async #commit(changes, statuses, { sendFilters = true, volume, volumeBeforeEarrape = this.#volumeBeforeEarrape } = {}) {
+        const committed = structuredClone(changes);
+        const data = {};
+        if (sendFilters) data.filters = structuredClone(this.payload({ ...this, ...committed }));
+        if (volume !== undefined) data.volume = volume;
+        const oldPlayer = volume === undefined ? null : { ...this.player };
+        if (sendFilters || volume !== undefined) {
+            await this.player.node.rest.updatePlayer({ guildId: this.player.guildId, data });
+        }
+        Object.assign(this, committed);
+        Object.assign(this.filtersStatus, statuses);
+        this.#volumeBeforeEarrape = volumeBeforeEarrape;
+        if (oldPlayer) {
+            this.player.volume = volume;
+            this.player.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, this.player, {
+                changeType: Manager_1.PlayerStateEventTypes.VolumeChange,
+                details: { previousVolume: oldPlayer.volume, currentVolume: volume },
+            });
         }
         return this;
     }
-    async applyFilters(filters, updateFilters = true) {
-        const entries = Object.entries(filters);
-        for (const [key] of entries) {
-            if (!filterProperties.has(key)) throw new TypeError("Unknown audio filter property.");
+
+    #restorePlayerVolume() {
+        if (this.filtersStatus[AvailableFilters.Earrape] && this.player.volume === boostedVolume) {
+            return this.#volumeBeforeEarrape ?? 100;
         }
-        for (const [key, value] of entries) this[key] = value;
-        if (updateFilters) {
-            await this.updateFilters();
-        }
-        return this;
+        return undefined;
     }
     /**
      * Sets the status of a specific filter.
@@ -144,24 +202,11 @@ class Filters {
      * @returns {this} - Returns the current instance of the Filters class for method chaining.
      */
     async clearFilters() {
-        this.filtersStatus = Object.values(AvailableFilters).reduce((acc, filter) => {
-            acc[filter] = false;
-            return acc;
-        }, {});
-        this.distortion = null;
-        this.equalizer = [];
-        this.karaoke = null;
-        this.rotation = null;
-        this.timescale = null;
-        this.vibrato = null;
-        this.tremoloOptions = null;
-        this.channelMix = null;
-        this.lowPass = null;
-        this.reverb = null;
-        this.volume = 1.0;
-        this.bassBoostlevel = 0;
-        await this.updateFilters();
-        return this;
+        return this.player.runOperation(() => this.#commit(
+            defaultFilterValues,
+            Object.fromEntries(Object.values(AvailableFilters).map(filter => [filter, false])),
+            { volume: this.#restorePlayerVolume(), volumeBeforeEarrape: null },
+        ));
     }
     /**
      * Sets the own equalizer bands on the audio.
@@ -173,7 +218,7 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async setEqualizer(bands) {
-        return await this.applyFilter({ property: "equalizer", value: bands });
+        return this.applyFilter({ property: "equalizer", value: bands ?? [] });
     }
     /**
      * Sets the own karaoke options to the audio.
@@ -186,10 +231,7 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async setKaraoke(karaoke) {
-        const result = await this.applyFilter({ property: "karaoke", value: karaoke ?? null });
-        return karaoke
-            ? result.setFilterStatus(AvailableFilters.SetKaraoke, true)
-            : (await this.applyFilter({ property: "karaoke", value: null })).setFilterStatus(AvailableFilters.SetKaraoke, false);
+        return this.#setFilter(AvailableFilters.SetKaraoke, "karaoke", karaoke ?? null);
     }
     /**
      * Sets the own timescale options to the audio.
@@ -200,10 +242,7 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async setTimescale(timescale) {
-        const result = await this.applyFilter({ property: "timescale", value: timescale ?? null });
-        return timescale
-            ? result.setFilterStatus(AvailableFilters.SetTimescale, true)
-            : (await this.applyFilter({ property: "timescale", value: null })).setFilterStatus(AvailableFilters.SetTimescale, false);
+        return this.#setFilter(AvailableFilters.SetTimescale, "timescale", timescale ?? null);
     }
     /**
      * Sets the own vibrato options to the audio.
@@ -216,26 +255,20 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async setVibrato(vibrato) {
-        const result = await this.applyFilter({ property: "vibrato", value: vibrato ?? null });
-        return vibrato
-            ? result.setFilterStatus(AvailableFilters.Vibrato, true)
-            : (await this.applyFilter({ property: "vibrato", value: null })).setFilterStatus(AvailableFilters.Vibrato, false);
+        return this.#setFilter(AvailableFilters.Vibrato, "vibrato", vibrato ?? null);
     }
     async setTremolo(tremolo) {
-        const result = await this.applyFilter({ property: "tremoloOptions", value: tremolo ?? null });
-        return result.setFilterStatus(AvailableFilters.SetTremolo, !!tremolo);
+        return this.#setFilter(AvailableFilters.SetTremolo, "tremoloOptions", tremolo ?? null);
     }
     async setChannelMix(channelMix) {
-        const result = await this.applyFilter({ property: "channelMix", value: channelMix ?? null });
-        return result.setFilterStatus(AvailableFilters.SetChannelMix, !!channelMix);
+        return this.#setFilter(AvailableFilters.SetChannelMix, "channelMix", channelMix ?? null);
     }
     async setLowPass(lowPass) {
-        const result = await this.applyFilter({ property: "lowPass", value: lowPass ?? null });
-        return result.setFilterStatus(AvailableFilters.SetLowPass, !!lowPass);
+        return this.#setFilter(AvailableFilters.SetLowPass, "lowPass", lowPass ?? null);
     }
     async setReverb(reverb) {
-        const result = await this.applyFilter({ property: "reverb", value: reverb ?? null });
-        return result.setFilterStatus(AvailableFilters.SetReverb, !!reverb);
+        if (reverb != null) throw new RangeError("Reverb is not a built-in Lavalink v4 filter.");
+        return this.#updateFields({ reverb: null }, { flag: AvailableFilters.SetReverb, enabled: false, sendFilters: false });
     }
     /**
      * Sets the own rotation options effect to the audio.
@@ -248,10 +281,7 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async setRotation(rotation) {
-        const result = await this.applyFilter({ property: "rotation", value: rotation ?? null });
-        return rotation
-            ? result.setFilterStatus(AvailableFilters.SetRotation, true)
-            : (await this.applyFilter({ property: "rotation", value: null })).setFilterStatus(AvailableFilters.SetRotation, false);
+        return this.#setFilter(AvailableFilters.SetRotation, "rotation", rotation ?? null);
     }
     /**
      * Sets the own distortion options effect to the audio.
@@ -264,10 +294,7 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async setDistortion(distortion) {
-        const result = await this.applyFilter({ property: "distortion", value: distortion ?? null });
-        return distortion
-            ? result.setFilterStatus(AvailableFilters.SetDistortion, true)
-            : (await this.applyFilter({ property: "distortion", value: null })).setFilterStatus(AvailableFilters.SetDistortion, false);
+        return this.#setFilter(AvailableFilters.SetDistortion, "distortion", distortion ?? null);
     }
     /**
      * Sets the bass boost level on the audio.
@@ -292,19 +319,10 @@ class Filters {
      * await player.bassBoost(-3); // Maximum Bass Removal
      */
     async bassBoost(stage) {
-        // Ensure stage is between -3 and 3
-        stage = Math.max(-3, Math.min(3, stage));
-        // Map stage (-3 to 3) to range (-1.0 to 1.0)
-        const level = stage / 3; // Converts -3 to 3 → -1.0 to 1.0
-        // Generate a dynamic equalizer by scaling bassBoostEqualizer
-        const equalizer = filtersEqualizers_1.bassBoostEqualizer.map((band) => ({
-            band: band.band,
-            gain: band.gain * level, // Scale the gain dynamically
-        }));
-        await this.applyFilter({ property: "equalizer", value: equalizer });
-        this.setFilterStatus(AvailableFilters.BassBoost, stage !== 0); // Active if stage is not 0
-        this.bassBoostlevel = stage;
-        return this;
+        if (typeof stage !== "number" || !Number.isFinite(stage)) throw new TypeError("Bass boost requires a finite level.");
+        const level = Math.max(-3, Math.min(3, stage));
+        const equalizer = filtersEqualizers_1.bassBoostEqualizer.map(band => ({ band: band.band, gain: band.gain * level / 3 }));
+        return this.#togglePreset(AvailableFilters.BassBoost, level !== 0, { equalizer, bassBoostlevel: level });
     }
     /**
      * Toggles the chipmunk effect on the audio.
@@ -317,10 +335,7 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async chipmunk(status) {
-        const result = await this.applyFilter({ property: "timescale", value: status ? { speed: 1.08, pitch: 1.35, rate: 1.0 } : null });
-        return status
-            ? result.setFilterStatus(AvailableFilters.Chipmunk, true)
-            : (await this.applyFilter({ property: "timescale", value: null })).setFilterStatus(AvailableFilters.Chipmunk, false);
+        return this.#togglePreset(AvailableFilters.Chipmunk, status, { timescale: { speed: 1.08, pitch: 1.35, rate: 1.0 } });
     }
     /**
      * Toggles the "China" effect on the audio.
@@ -332,10 +347,7 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async china(status) {
-        const result = await this.applyFilter({ property: "timescale", value: status ? { speed: 1.0, pitch: 0.82, rate: 1.0 } : null });
-        return status
-            ? result.setFilterStatus(AvailableFilters.China, true)
-            : (await this.applyFilter({ property: "timescale", value: null })).setFilterStatus(AvailableFilters.China, false);
+        return this.#togglePreset(AvailableFilters.China, status, { timescale: { speed: 1.0, pitch: 0.82, rate: 1.0 } });
     }
     /**
      * Toggles the 8D audio effect on the audio.
@@ -348,15 +360,10 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async eightD(status) {
-        const result = await this.applyFilters(status
-            ? {
-                rotation: { rotationHz: 0.18 },
-                channelMix: { leftToLeft: 0.85, leftToRight: 0.15, rightToLeft: 0.15, rightToRight: 0.85 },
-            }
-            : { rotation: null, channelMix: null });
-        return status
-            ? result.setFilterStatus(AvailableFilters.EightD, true)
-            : result.setFilterStatus(AvailableFilters.EightD, false);
+        return this.#togglePreset(AvailableFilters.EightD, status, {
+            rotation: { rotationHz: 0.18 },
+            channelMix: { leftToLeft: 0.85, leftToRight: 0.15, rightToLeft: 0.15, rightToRight: 0.85 },
+        });
     }
     /**
      * Toggles the nightcore effect on the audio.
@@ -369,10 +376,7 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async nightcore(status) {
-        const result = await this.applyFilter({ property: "timescale", value: status ? { speed: 1.12, pitch: 1.18, rate: 1.0 } : null });
-        return status
-            ? result.setFilterStatus(AvailableFilters.Nightcore, true)
-            : (await this.applyFilter({ property: "timescale", value: null })).setFilterStatus(AvailableFilters.Nightcore, false);
+        return this.#togglePreset(AvailableFilters.Nightcore, status, { timescale: { speed: 1.12, pitch: 1.18, rate: 1.0 } });
     }
     /**
      * Toggles the slowmo effect on the audio.
@@ -385,10 +389,7 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async slowmo(status) {
-        const result = await this.applyFilter({ property: "timescale", value: status ? { speed: 0.78, pitch: 1.0, rate: 1.0 } : null });
-        return status
-            ? result.setFilterStatus(AvailableFilters.Slowmo, true)
-            : (await this.applyFilter({ property: "timescale", value: null })).setFilterStatus(AvailableFilters.Slowmo, false);
+        return this.#togglePreset(AvailableFilters.Slowmo, status, { timescale: { speed: 0.78, pitch: 1.0, rate: 1.0 } });
     }
     /**
      * Toggles a soft equalizer effect to the audio.
@@ -401,10 +402,7 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async soft(status) {
-        const result = await this.applyFilter({ property: "equalizer", value: status ? filtersEqualizers_1.softEqualizer : [] });
-        return status
-            ? result.setFilterStatus(AvailableFilters.Soft, true)
-            : (await this.applyFilter({ property: "equalizer", value: [] })).setFilterStatus(AvailableFilters.Soft, false);
+        return this.#togglePreset(AvailableFilters.Soft, status, { equalizer: filtersEqualizers_1.softEqualizer });
     }
     /**
      * Toggles the TV equalizer effect on the audio.
@@ -417,10 +415,7 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async tv(status) {
-        const result = await this.applyFilter({ property: "equalizer", value: status ? filtersEqualizers_1.tvEqualizer : [] });
-        return status
-            ? result.setFilterStatus(AvailableFilters.TV, true)
-            : (await this.applyFilter({ property: "equalizer", value: [] })).setFilterStatus(AvailableFilters.TV, false);
+        return this.#togglePreset(AvailableFilters.TV, status, { equalizer: filtersEqualizers_1.tvEqualizer });
     }
     /**
      * Toggles the treble/bass equalizer effect on the audio.
@@ -432,10 +427,7 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async trebleBass(status) {
-        const result = await this.applyFilter({ property: "equalizer", value: status ? filtersEqualizers_1.trebleBassEqualizer : [] });
-        return status
-            ? result.setFilterStatus(AvailableFilters.TrebleBass, true)
-            : (await this.applyFilter({ property: "equalizer", value: [] })).setFilterStatus(AvailableFilters.TrebleBass, false);
+        return this.#togglePreset(AvailableFilters.TrebleBass, status, { equalizer: filtersEqualizers_1.trebleBassEqualizer });
     }
     /**
      * Toggles the vaporwave effect on the audio.
@@ -447,17 +439,11 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async vaporwave(status) {
-        const result = await this.applyFilters(status
-            ? {
-                equalizer: filtersEqualizers_1.vaporwaveEqualizer,
-                timescale: { speed: 0.9, pitch: 0.85, rate: 1.0 },
-                rotation: { rotationHz: 0.05 },
-                reverb: { wet: 0.18, dry: 0.92, roomSize: 0.45, damping: 0.65 },
-            }
-            : { equalizer: [], timescale: null, rotation: null, reverb: null });
-        return status
-            ? result.setFilterStatus(AvailableFilters.Vaporwave, true)
-            : result.setFilterStatus(AvailableFilters.Vaporwave, false);
+        return this.#togglePreset(AvailableFilters.Vaporwave, status, {
+            equalizer: filtersEqualizers_1.vaporwaveEqualizer,
+            timescale: { speed: 0.9, pitch: 0.85, rate: 1.0 },
+            rotation: { rotationHz: 0.05 },
+        });
     }
     /**
      * Toggles the distortion effect on the audio.
@@ -470,18 +456,9 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async distort(status) {
-        return status
-            ? this.setDistortion({
-                sinOffset: 0,
-                sinScale: 0.15,
-                cosOffset: 0,
-                cosScale: 0.12,
-                tanOffset: 0,
-                tanScale: 0.1,
-                offset: 0,
-                scale: 1.05,
-            }).then((result) => result.setFilterStatus(AvailableFilters.Distort, true))
-            : this.setDistortion().then((result) => result.setFilterStatus(AvailableFilters.Distort, false));
+        return this.#togglePreset(AvailableFilters.Distort, status, {
+            distortion: { sinOffset: 0, sinScale: 0.15, cosOffset: 0, cosScale: 0.12, tanOffset: 0, tanScale: 0.1, offset: 0, scale: 1.05 },
+        });
     }
     /**
      * Toggles the party effect on the audio.
@@ -493,10 +470,7 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async pop(status) {
-        const result = await this.applyFilter({ property: "equalizer", value: status ? filtersEqualizers_1.popEqualizer : [] });
-        return status
-            ? result.setFilterStatus(AvailableFilters.Pop, true)
-            : (await this.applyFilter({ property: "equalizer", value: [] })).setFilterStatus(AvailableFilters.Pop, false);
+        return this.#togglePreset(AvailableFilters.Pop, status, { equalizer: filtersEqualizers_1.popEqualizer });
     }
     /**
      * Toggles a party effect on the audio.
@@ -506,10 +480,7 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async party(status) {
-        const result = await this.applyFilter({ property: "equalizer", value: status ? filtersEqualizers_1.partyEqualizer : [] });
-        return status
-            ? result.setFilterStatus(AvailableFilters.Party, true)
-            : (await this.applyFilter({ property: "equalizer", value: [] })).setFilterStatus(AvailableFilters.Party, false);
+        return this.#togglePreset(AvailableFilters.Party, status, { equalizer: filtersEqualizers_1.partyEqualizer });
     }
     /**
      * Toggles earrape effect on the audio.
@@ -519,14 +490,15 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async earrape(status) {
-        if (status) {
-            await this.player.setVolume(200);
-            return this.setFilterStatus(AvailableFilters.Earrape, true);
-        }
-        else {
-            await this.player.setVolume(100);
-            return this.setFilterStatus(AvailableFilters.Earrape, false);
-        }
+        const enabled = Boolean(status);
+        return this.player.runOperation(() => {
+            if (this.filtersStatus[AvailableFilters.Earrape] === enabled) return this;
+            return this.#commit({}, { [AvailableFilters.Earrape]: enabled }, {
+                sendFilters: false,
+                volume: enabled ? boostedVolume : this.#restorePlayerVolume(),
+                volumeBeforeEarrape: enabled ? this.player.volume : null,
+            });
+        });
     }
     /**
      * Toggles electronic effect on the audio.
@@ -536,10 +508,7 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async electronic(status) {
-        const result = await this.applyFilter({ property: "equalizer", value: status ? filtersEqualizers_1.electronicEqualizer : [] });
-        return status
-            ? result.setFilterStatus(AvailableFilters.Electronic, true)
-            : (await this.applyFilter({ property: "equalizer", value: [] })).setFilterStatus(AvailableFilters.Electronic, false);
+        return this.#togglePreset(AvailableFilters.Electronic, status, { equalizer: filtersEqualizers_1.electronicEqualizer });
     }
     /**
      * Toggles radio effect on the audio.
@@ -549,10 +518,7 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async radio(status) {
-        const result = await this.applyFilter({ property: "equalizer", value: status ? filtersEqualizers_1.radioEqualizer : [] });
-        return status
-            ? result.setFilterStatus(AvailableFilters.Radio, true)
-            : (await this.applyFilter({ property: "equalizer", value: [] })).setFilterStatus(AvailableFilters.Radio, false);
+        return this.#togglePreset(AvailableFilters.Radio, status, { equalizer: filtersEqualizers_1.radioEqualizer });
     }
     /**
      * Toggles a tremolo effect on the audio.
@@ -562,10 +528,7 @@ class Filters {
      * @returns {this} - Returns the current instance of the Filters class for method chaining.
      */
     async tremolo(status) {
-        const result = await this.setTremolo(status ? { frequency: 4, depth: 0.35 } : null);
-        return status
-            ? result.setFilterStatus(AvailableFilters.Tremolo, true)
-            : result.setFilterStatus(AvailableFilters.Tremolo, false);
+        return this.#togglePreset(AvailableFilters.Tremolo, status, { tremoloOptions: { frequency: 4, depth: 0.35 } });
     }
     /**
      * Toggless a darthvader effect on the audio.
@@ -575,12 +538,10 @@ class Filters {
      * @returns {this} - Returns the current instance of the Filters class for method chaining.
      */
     async darthvader(status) {
-        const result = await this.applyFilters(status
-            ? { equalizer: filtersEqualizers_1.demonEqualizer, timescale: { speed: 0.92, pitch: 0.68, rate: 1.0 } }
-            : { equalizer: [], timescale: null });
-        return status
-            ? result.setFilterStatus(AvailableFilters.Darthvader, true)
-            : result.setFilterStatus(AvailableFilters.Darthvader, false);
+        return this.#togglePreset(AvailableFilters.Darthvader, status, {
+            equalizer: filtersEqualizers_1.demonEqualizer,
+            timescale: { speed: 0.92, pitch: 0.68, rate: 1.0 },
+        });
     }
     /**
      * Toggles a daycore effect on the audio.
@@ -590,10 +551,7 @@ class Filters {
      * @returns {this} - Returns the current instance of the Filters class for method chaining.
      */
     async daycore(status) {
-        const result = await this.applyFilter({ property: "timescale", value: status ? { speed: 0.85, pitch: 0.82, rate: 1.0 } : null });
-        return status
-            ? result.setFilterStatus(AvailableFilters.Daycore, true)
-            : (await this.applyFilter({ property: "timescale", value: null })).setFilterStatus(AvailableFilters.Daycore, false);
+        return this.#togglePreset(AvailableFilters.Daycore, status, { timescale: { speed: 0.85, pitch: 0.82, rate: 1.0 } });
     }
     /**
      * Toggles a doubletime effect on the audio.
@@ -603,36 +561,22 @@ class Filters {
      * @returns {this} - Returns the current instance of the Filters class for method chaining
      */
     async doubletime(status) {
-        const result = await this.applyFilter({ property: "timescale", value: status ? { speed: 1.5, pitch: 1.0, rate: 1.0 } : null });
-        return status
-            ? result.setFilterStatus(AvailableFilters.Doubletime, true)
-            : (await this.applyFilter({ property: "timescale", value: null })).setFilterStatus(AvailableFilters.Doubletime, false);
+        return this.#togglePreset(AvailableFilters.Doubletime, status, { timescale: { speed: 1.5, pitch: 1.0, rate: 1.0 } });
     }
     /**
      * Toggles the demon effect on the audio.
      *
      * This method applies or removes a demon effect by adjusting the equalizer,
-     * timescale, and reverb settings. When enabled, it creates a deeper and more
-     * intense sound by lowering the pitch and adding reverb to the audio.
+     * and timescale settings to produce a deeper sound.
      *
      * @param {boolean} status - Whether to enable or disable the demon effect.
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async demon(status) {
-        const filters = status
-            ? {
-                equalizer: filtersEqualizers_1.demonEqualizer,
-                timescale: { speed: 0.92, pitch: 0.72, rate: 1.0 },
-                reverb: { wet: 0.45, dry: 0.75, roomSize: 0.8, damping: 0.55 },
-            }
-            : {
-                equalizer: [],
-                timescale: null,
-                reverb: null,
-            };
-        await this.applyFilters(filters);
-        this.setFilterStatus(AvailableFilters.Demon, status);
-        return this;
+        return this.#togglePreset(AvailableFilters.Demon, status, {
+            equalizer: filtersEqualizers_1.demonEqualizer,
+            timescale: { speed: 0.92, pitch: 0.72, rate: 1.0 },
+        });
     }
 }
 exports.Filters = Filters;
@@ -669,3 +613,36 @@ var AvailableFilters;
     AvailableFilters["Doubletime"] = "doubletime";
     AvailableFilters["Demon"] = "demon";
 })(AvailableFilters || (exports.AvailableFilters = AvailableFilters = {}));
+
+// A Lavalink filter field can have one active preset at a time.
+const effectProperties = {
+    [AvailableFilters.BassBoost]: ["equalizer", "bassBoostlevel"],
+    [AvailableFilters.Distort]: ["distortion"],
+    [AvailableFilters.SetDistortion]: ["distortion"],
+    [AvailableFilters.EightD]: ["rotation", "channelMix"],
+    [AvailableFilters.SetKaraoke]: ["karaoke"],
+    [AvailableFilters.Nightcore]: ["timescale"],
+    [AvailableFilters.Slowmo]: ["timescale"],
+    [AvailableFilters.Soft]: ["equalizer"],
+    [AvailableFilters.TrebleBass]: ["equalizer"],
+    [AvailableFilters.SetTimescale]: ["timescale"],
+    [AvailableFilters.TV]: ["equalizer"],
+    [AvailableFilters.Vibrato]: ["vibrato"],
+    [AvailableFilters.SetTremolo]: ["tremoloOptions"],
+    [AvailableFilters.SetChannelMix]: ["channelMix"],
+    [AvailableFilters.SetLowPass]: ["lowPass"],
+    [AvailableFilters.SetReverb]: ["reverb"],
+    [AvailableFilters.Vaporwave]: ["equalizer", "timescale", "rotation"],
+    [AvailableFilters.Pop]: ["equalizer"],
+    [AvailableFilters.Party]: ["equalizer"],
+    [AvailableFilters.Electronic]: ["equalizer"],
+    [AvailableFilters.Radio]: ["equalizer"],
+    [AvailableFilters.SetRotation]: ["rotation"],
+    [AvailableFilters.Tremolo]: ["tremoloOptions"],
+    [AvailableFilters.China]: ["timescale"],
+    [AvailableFilters.Chipmunk]: ["timescale"],
+    [AvailableFilters.Darthvader]: ["equalizer", "timescale"],
+    [AvailableFilters.Daycore]: ["timescale"],
+    [AvailableFilters.Doubletime]: ["timescale"],
+    [AvailableFilters.Demon]: ["equalizer", "timescale"],
+};

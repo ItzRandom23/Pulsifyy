@@ -642,7 +642,7 @@ declare abstract class AutoPlayUtils {
      * @param track The track to get recommended tracks for.
      * @returns An array of recommended tracks.
      */
-    static getRecommendedTracks(track: Track, manager?: Manager, node?: Node): Promise<Track[]>;
+    static getRecommendedTracks(track: Track, manager?: Manager, node?: Node, selectTracks?: (tracks: Track[]) => Track[]): Promise<Track[]>;
     /**
      * Gets recommended tracks from Last.fm for the given track.
      * @param track The track to get recommended tracks for.
@@ -868,7 +868,7 @@ interface PlayerUpdate {
 }
 
 /**
- * The main hub for interacting with Lavalink and using Pulsify,
+ * The main hub for interacting with Lavalink and using Pulsifyy,
  */
 declare class Manager extends EventEmitter {
     /** The map of players. */
@@ -1092,7 +1092,7 @@ interface ManagerOptions {
     sessionDataPath?: string;
     logLevel?: "error" | "warn" | "info" | "debug";
     /**
-     * Called before Pulsify stops a track that raised a Lavalink exception.
+     * Called before Pulsifyy stops a track that raised a Lavalink exception.
      * Return true after recovering playback to prevent the default stop/skip path.
      */
     trackErrorRecovery?: (player: Player, track: Track, payload: TrackExceptionEvent | TrackStuckEvent) => boolean | Promise<boolean>;
@@ -1544,12 +1544,12 @@ declare class Player {
      */
     setQueueRepeat(repeat: boolean): this;
     /**
-     * Sets the queue to repeat and shuffles the queue after each song.
+     * Repeats the queue and periodically shuffles upcoming tracks.
      * @param repeat "true" or "false".
      * @param ms After how many milliseconds to trigger dynamic repeat.
      * @returns {this} - The player instance.
      * @throws {TypeError} If the repeat parameter is not a boolean.
-     * @throws {RangeError} If the queue size is less than or equal to 1.
+     * @throws {RangeError} If the queue is empty or the shuffle interval is invalid when enabling repeat.
      */
     setDynamicRepeat(repeat: boolean, ms: number): this;
     /**
@@ -1722,7 +1722,7 @@ declare class Filters {
      * This method sends a request to the player's node to update the filter settings
      * based on the current properties of the `Filters` instance. The filters include
      * distortion, equalizer, karaoke, rotation, timescale, tremolo, vibrato, channel mix,
-     * low pass, reverb, and volume. Once
+     * low pass, and volume. Once
      * the request is sent, it ensures that the player's audio output reflects the
      * changes in filter settings.
      *
@@ -1818,7 +1818,7 @@ declare class Filters {
     setChannelMix(channelMix?: channelMixOptions): Promise<this>;
     /** Sets the low-pass smoothing filter. */
     setLowPass(lowPass?: lowPassOptions): Promise<this>;
-    /** Sets the optional reverb plugin filter. */
+    /** Clears legacy reverb state. Rejects when reverb options are supplied because the Lavalink v4 base API has no reverb filter. */
     setReverb(reverb?: reverbOptions): Promise<this>;
     /**
      * Sets the own rotation options effect to the audio.

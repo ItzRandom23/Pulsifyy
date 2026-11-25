@@ -1,120 +1,14 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const http = require("node:http");
 const { once } = require("node:events");
 const { mkdtemp, readFile, rm } = require("node:fs/promises");
 const { tmpdir } = require("node:os");
 const { join } = require("node:path");
 const { performance } = require("node:perf_hooks");
-const { setTimeout: delay } = require("node:timers/promises");
-const { WebSocketServer } = require("ws");
 const { AutoPlayPlatform, LoadTypes, Manager, SearchPlatform, TrackUtils, TrackPartial } = require("pulsifyy");
 
-const rawTrack = encoded => ({
-  encoded, info: { title: encoded, identifier: encoded, author: "Artist", length: 9000,
-    sourceName: "soundcloud", isSeekable: true, isStream: false, uri: null }, pluginInfo: {},
-});
-const track = encoded => TrackUtils.build(rawTrack(encoded));
-const managersByTest = new WeakMap();
-const serversByTest = new WeakMap();
-
-async function nodeMock(t) {
-  if (!managersByTest.has(t)) {
-    const managers = [];
-    const servers = [];
-    managersByTest.set(t, managers);
-    serversByTest.set(t, servers);
-    t.after(async () => {
-      const results = await Promise.allSettled(managers.map(manager => manager.handleShutdown()));
-      await Promise.all(servers.map(close => close()));
-      for (const result of results) if (result.status === "rejected") throw result.reason;
-    });
-  }
-  const password = "fixture-lavalink";
-  const state = { sessions: new Map(), requests: [], headers: [], generation: 0, password };
-  const server = http.createServer(async (request, response) => {
-    const chunks = [];
-    for await (const chunk of request) chunks.push(chunk);
-    const body = chunks.length ? JSON.parse(Buffer.concat(chunks)) : undefined;
-    const url = new URL(request.url, "http://localhost");
-    const method = request.method;
-    state.requests.push({ method, path: url.pathname, body, url });
-    const reply = (status, data) => {
-      response.writeHead(status, { "content-type": "application/json" });
-      response.end(data === undefined ? undefined : JSON.stringify(data));
-    };
-    if (request.headers.authorization !== password) return reply(401, { message: "Unauthorized" });
-    if (state.respond && await state.respond({ method, url, body, reply, response })) return;
-    if (url.pathname === "/v4/info") return reply(200, { sourceManagers: ["soundcloud", "spotify"], plugins: [] });
-    if (url.pathname === "/v4/loadtracks") return reply(200, { loadType: "track", data: rawTrack(url.searchParams.get("identifier")) });
-    if (url.pathname === "/v4/decodetracks") return reply(200, body.map(rawTrack));
-    const route = /^\/v4\/sessions\/([^/]+)(?:\/(players)(?:\/(\d+))?)?$/.exec(url.pathname);
-    if (!route) return reply(404, { message: "Route not found" });
-    const session = state.sessions.get(route[1]);
-    if (!session) return reply(404, { message: "Session not found" });
-    if (!route[2]) return reply(200, body);
-    const guild = route[3];
-    if (!guild) return reply(200, [...session.values()]);
-    if (method === "DELETE") {
-      return session.delete(guild) ? reply(204) : reply(404, { message: "Player not found" });
-    }
-    const player = session.get(guild) ?? { guildId: guild, volume: 100, state: { position: 0 }, voice: {}, track: null };
-    if (method === "GET") return reply(200, player);
-    if (body.track && !(url.searchParams.get("noReplace") === "true" && player.track)) {
-      player.track = body.track.encoded == null ? null : { ...rawTrack(body.track.encoded), userData: body.track.userData };
-    }
-    for (const key of ["voice", "volume", "filters", "paused"]) {
-      if (Object.hasOwn(body, key)) player[key] = body[key];
-    }
-    if (body.position !== undefined) player.state.position = body.position;
-    session.set(guild, player);
-    return reply(200, player);
-  });
-  const sockets = new WebSocketServer({ server, path: "/v4/websocket" });
-  sockets.on("connection", (socket, request) => {
-    state.headers.push(request.headers);
-    state.socket = socket;
-    const previous = request.headers["session-id"];
-    const resumed = state.sessions.has(previous);
-    state.sessionId = resumed ? previous : "session" + (++state.generation);
-    if (!resumed) state.sessions.set(state.sessionId, new Map());
-    if (!state.suppressReady) socket.send(JSON.stringify({ op: "ready", resumed, sessionId: state.sessionId }));
-  });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  serversByTest.get(t).push(async () => {
-    for (const socket of sockets.clients) socket.terminate();
-    await new Promise(resolve => sockets.close(resolve));
-    await new Promise(resolve => server.close(resolve));
-  });
-  state.options = { host: "127.0.0.1", port: server.address().port, identifier: String(server.address().port),
-    password, apiRequestTimeoutMs: 400, retryDelayMs: 10, maxRetryAttempts: 2 };
-  state.event = (guildId, type, eventTrack, reason) => {
-    state.socket.send(JSON.stringify({ op: "event", guildId, type, track: eventTrack, reason }));
-  };
-  return state;
-}
-
-async function managed(t, nodes, options = {}, clientId = "111") {
-  const packets = [];
-  const manager = new Manager({ nodes, send: (guild, payload) => packets.push({ guild, payload }), ...options });
-  const ready = Promise.all([...manager.nodes.values()].map(node => {
-    return new Promise(resolve => {
-      const listener = connected => {
-        if (node === connected) { manager.off("nodeConnect", listener); resolve(); }
-      };
-      manager.on("nodeConnect", listener);
-    });
-  }));
-  managersByTest.get(t).push(manager);
-  manager.init(clientId);
-  await ready;
-  return { manager, packets };
-}
-
-const voiceServer = (guild, endpoint = "voice.fixture") => ({ t: "VOICE_SERVER_UPDATE", d: { guild_id: guild, endpoint, token: "fixture-voice" } });
-const voiceState = (guild, channel, user = "111") => ({ t: "VOICE_STATE_UPDATE", d: { guild_id: guild, user_id: user, channel_id: channel, session_id: "voice-session" } });
+const { nodeMock, managed, rawTrack, track, until, voiceServer, voiceState } = require("./protocol-fixture");
 
 test("voice packet ordering, guild isolation and retry after a failed voice update", { timeout: 5000 }, async t => {
   const backend = await nodeMock(t);
@@ -183,6 +77,29 @@ test("player controls serialize, apply v4 options, and preserve state on rejecti
   assert.equal(await player.destroy(), true);
   assert.equal(manager.players.size, 0);
   await assert.rejects(player.play(track("late")), /destroyed/);
+});
+
+test("the next queued track starts when Lavalink re-encodes the finished track", { timeout: 5000 }, async t => {
+  const backend = await nodeMock(t);
+  const { manager } = await managed(t, [backend.options]);
+  const player = manager.create({ guildId: "42" });
+  player.queue.add([track("first"), track("second")]);
+  await player.play();
+  const remote = () => backend.sessions.get(backend.sessionId).get("42").track;
+  const finished = { ...remote(), encoded: "first-at-end-position" };
+
+  backend.event("42", "TrackEndEvent", finished, "finished");
+  await until(() => remote().encoded === "second" && player.playing);
+  assert.equal(player.queue.current.track, "second");
+  assert.equal(player.playing, true);
+  assert.equal(player.queue.length, 0);
+
+  // A delayed event from the old playback must not end the new track.
+  const received = once(manager, "nodeRaw");
+  backend.event("42", "TrackEndEvent", { ...finished, encoded: "second" }, "finished");
+  await received;
+  await player.eventQueue;
+  assert.equal(player.queue.current.track, "second");
 });
 
 test("duplicate and stale events do not skip repeated encodings or fire queueEnd twice", { timeout: 5000 }, async t => {
@@ -272,8 +189,7 @@ test("filters update in order and clear their remote settings", { timeout: 5000 
   assert.deepEqual(remote.filters.equalizer, [{ band: 0, gain: 0.15 }]);
   assert.equal(remote.filters.timescale.speed, 1.1);
   await filters.clearFilters();
-  assert.deepEqual(remote.filters.equalizer, []);
-  assert.equal(remote.filters.timescale, null);
+  assert.deepEqual(remote.filters, {});
 });
 
 test("an existing session resumes without replaying the active track", { timeout: 5000 }, async t => {
@@ -475,11 +391,3 @@ test("queue validation, immutable inputs and cleanup across 1000 concurrent guil
   assert.equal(manager.inactivityTimer, undefined);
   t.diagnostic("Created and populated 1000 players in " + setup.toFixed(1) + " ms");
 });
-
-async function until(condition) {
-  for (let attempt = 0; attempt < 250; attempt++) {
-    if (condition()) return;
-    await delay(8);
-  }
-  assert.fail("Timed out waiting for protocol state");
-}

@@ -1,10 +1,10 @@
-# Build your first music bot with Pulsify
+# Build your first music bot with Pulsifyy
 
-Pulsify connects your Discord bot to Lavalink. Your bot handles commands and voice gateway packets; Lavalink loads tracks and streams audio. Pulsify manages the connection, players, and queues between them.
+Pulsifyy connects your Discord bot to Lavalink. Your bot handles commands and voice gateway packets; Lavalink loads tracks and streams audio. Pulsifyy manages the connection, players, and queues between them.
 
 ## 1. Prepare the tools
 
-You need Node.js 22.19 or newer, a Discord bot token, and a working Lavalink 4.2.2 server. Pulsify supports discord.js 13 and 14; the example uses version 14. Obtain the server release and Java requirements from [Lavalink's installation guide](https://lavalink.dev/getting-started/index.html).
+You need Node.js 22.19 or newer, a Discord bot token, and a working Lavalink 4.2.2 server. Pulsifyy supports discord.js 13 and 14; the example uses version 14. Obtain the server release and Java requirements from [Lavalink's installation guide](https://lavalink.dev/getting-started/index.html).
 
 For a local Lavalink server, create `application.yml` beside `Lavalink.jar`:
 
@@ -29,13 +29,19 @@ Create an application and bot in the [Discord Developer Portal](https://discord.
 
 The example requests Guilds, GuildVoiceStates, GuildMessages, and MessageContent intents. Voice state events are required to establish playback. Learn more in the [discord.js intents guide](https://discordjs.guide/legacy/popular-topics/intents).
 
-## 3. Install Pulsify
+## 3. Install Pulsifyy
 
-After the npm release is published, install in a new bot directory. For the local candidate, install the tarball produced by `npm pack`.
+In a new bot directory, initialize a Node.js project and install Pulsifyy. In an existing bot project, run just the install command.
 
 ```sh
 npm init -y
-npm install discord.js@14 pulsifyy
+npm install pulsifyy
+```
+
+If you already have a Discord client, follow [how the example works](#how-the-example-works) to connect its gateway to Pulsifyy. To run the included starter, add its Discord client:
+
+```sh
+npm install discord.js@14
 ```
 
 Download or copy [the complete example](../examples/basic-bot/index.js) as `index.js`, and [.env.example](../examples/basic-bot/.env.example) as `.env`. Enter your bot token and Lavalink settings. Keep `.env` out of version control by adding it to your bot project's `.gitignore`.

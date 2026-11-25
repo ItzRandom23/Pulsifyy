@@ -12,4 +12,4 @@ for (const directory of ["dist", "scripts", "test", "examples"]) {
   const fullPath = path.join(__dirname, "..", directory);
   if (fs.existsSync(fullPath)) check(fullPath);
 }
-console.log("Pulsify JavaScript syntax checks passed.");
+console.log("Pulsifyy JavaScript syntax checks passed.");

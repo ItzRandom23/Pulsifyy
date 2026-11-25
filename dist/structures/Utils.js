@@ -100,10 +100,11 @@ class TrackUtils {
             track.displayThumbnail = track.displayThumbnail.bind(track);
             if (partial) {
                 for (const key of Object.keys(track)) {
-                    if (key === "track" || partial.includes(key))
+                    if (key === "track" || key === "displayThumbnail" || partial.includes(key))
                         continue;
                     delete track[key];
                 }
+                Object.defineProperty(track, "displayThumbnail", { enumerable: false });
             }
             return track;
         }
@@ -161,18 +162,18 @@ class AutoPlayUtils {
 
     static get manager() { return this.managerRef?.deref(); }
 
-    static async getRecommendedTracks(track, manager = this.manager, node = manager?.useableNode) {
+    static async getRecommendedTracks(track, manager = this.manager, node = manager?.useableNode, selectTracks = tracks => tracks) {
         if (!node) throw new Error("No available nodes.");
         const enabled = new Set(node.info?.sourceManagers?.map(source => source.toLowerCase()));
         for (const platform of manager.options.autoPlaySearchPlatforms) {
             if (!enabled.has(platform)) continue;
             try {
-                const tracks = await this.getRecommendedTracksFromSource(track, platform, manager, node);
+                const tracks = selectTracks(await this.getRecommendedTracksFromSource(track, platform, manager, node));
                 if (tracks.length) return tracks;
             } catch { manager.log("warn", "A Lavalink recommendation source failed."); }
         }
         if (manager.options.lastFmApiKey) {
-            try { return await this.getRecommendedTracksFromLastFm(track, manager.options.lastFmApiKey, manager, node); }
+            try { return selectTracks(await this.getRecommendedTracksFromLastFm(track, manager.options.lastFmApiKey, manager, node)); }
             catch { manager.log("warn", "Last.fm recommendations failed."); }
         }
         return [];
@@ -202,7 +203,7 @@ class AutoPlayUtils {
         if (!Array.isArray(matches) || !matches.length) return [];
         const next = matches[Math.floor(Math.random() * matches.length)];
         if (!next?.artist?.name || !next.name) return [];
-        const result = await manager.search(next.artist.name + " - " + next.name, track.requester);
+        const result = await manager.searchOnNode(node, next.artist.name + " - " + next.name, track.requester);
         return result.tracks.filter(candidate => candidate.track !== track.track);
     }
 
@@ -213,7 +214,7 @@ class AutoPlayUtils {
             : typeof track.identifier === "string" && track.sourceName?.toLowerCase() === platform;
         if (!matchesSource) {
             if (!track.title && !track.author) return [];
-            const result = await manager.search([track.title, track.author].filter(Boolean).join(" "), track.requester, [platform]);
+            const result = await manager.searchOnNode(node, [track.title, track.author].filter(Boolean).join(" "), track.requester, [platform]);
             track = result.tracks[0];
             if (!track) return [];
         }
@@ -236,7 +237,7 @@ class AutoPlayUtils {
                 }
             }
             if (!urls.length) return [];
-            return (await manager.search(urls[Math.floor(Math.random() * urls.length)], track.requester)).tracks;
+            return (await manager.searchOnNode(node, urls[Math.floor(Math.random() * urls.length)], track.requester)).tracks;
         }
         if (typeof track.identifier !== "string" || !track.identifier) return [];
         const identifier = recommendationPrefixes.get(platform) + ":" + track.identifier;
