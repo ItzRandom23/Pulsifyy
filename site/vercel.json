@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
   "installCommand": "",
-  "buildCommand": "npm run docs -- --static",
-  "outputDirectory": "site",
+  "buildCommand": "node serve-docs.mjs --static",
+  "outputDirectory": "public",
   "cleanUrls": true
 }

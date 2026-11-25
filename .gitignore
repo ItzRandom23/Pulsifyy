@@ -9,5 +9,6 @@ magmastream/
 .npmrc
 *.log
 release/
+/site/public/
 /site/*/index.html
 /site/*/*/index.html
