@@ -15,7 +15,7 @@ function playerCheck(options) {
     const { guildId, node, selfDeafen, selfMute, textChannelId, voiceChannelId, volume } = options;
     // Validate the guild ID option
     // The guild ID option must be a non-empty string.
-    if (!/^\d+$/.test(guildId)) {
+    if (typeof guildId !== "string" || !/^\d+$/.test(guildId)) {
         throw new TypeError('Player option "guild ID" must be present and be a non-empty string.');
     }
     // Validate the node option
@@ -35,17 +35,17 @@ function playerCheck(options) {
     }
     // Validate the textChannelId option
     // The textChannelId option must be a non-empty string.
-    if (textChannelId && !/^\d+$/.test(textChannelId)) {
+    if (textChannelId != null && (typeof textChannelId !== "string" || !/^\d+$/.test(textChannelId))) {
         throw new TypeError('Player option "textChannelId" must be a non-empty string.');
     }
     // Validate the voiceChannelId option
     // The voiceChannelId option must be a non-empty string.
-    if (voiceChannelId && !/^\d+$/.test(voiceChannelId)) {
+    if (voiceChannelId != null && (typeof voiceChannelId !== "string" || !/^\d+$/.test(voiceChannelId))) {
         throw new TypeError('Player option "voiceChannelId" must be a non-empty string.');
     }
     // Validate the volume option
     // The volume option must be a number.
-    if (typeof volume !== "undefined" && typeof volume !== "number") {
+    if (volume !== undefined && (!Number.isInteger(volume) || volume < 0 || volume > 1000)) {
         throw new TypeError('Player option "volume" must be a number.');
     }
 }

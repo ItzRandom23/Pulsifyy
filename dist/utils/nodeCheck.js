@@ -1,69 +1,33 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.default = nodeCheck;
-/**
- * Validates the provided NodeOptions object.
- * @param options - The options to validate.
- * @throws {TypeError} Throws if any required option is missing or invalid.
- */
+const { isIP } = require("node:net");
+
 function nodeCheck(options) {
-    // If the options are empty, throw an error.
-    if (!options)
-        throw new TypeError("NodeOptions must not be empty.");
-    // Validate the host option
-    // The host option must be present and be a non-empty string.
-    const { host, identifier, password, port, enableSessionResumeOption, sessionTimeoutMs, maxRetryAttempts, retryDelayMs, apiRequestTimeoutMs, useSSL, nodePriority } = options;
-    if (typeof host !== "string" || !/.+/.test(host)) {
-        throw new TypeError('Node option "host" must be present and be a non-empty string.');
+    const { host, identifier, password, port, nodePriority } = options;
+    const ipv6 = typeof host === "string" && host.startsWith("[") && host.endsWith("]") && isIP(host.slice(1, -1)) === 6;
+    if (!ipv6 && (typeof host !== "string" || !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9.])?$/i.test(host))) {
+        throw new TypeError("Lavalink host must be a hostname, IPv4 address or bracketed IPv6 address.");
     }
-    // Validate the identifier option
-    // The identifier option must be a non-empty string or undefined.
-    if (typeof identifier !== "undefined" && typeof identifier !== "string") {
-        throw new TypeError('Node option "identifier" must be a non-empty string.');
+    if (identifier !== undefined && (typeof identifier !== "string" || !identifier.trim() || identifier.length > 128 || /[\x00-\x1f\x7f]/.test(identifier))) {
+        throw new TypeError("Invalid Lavalink node identifier.");
     }
-    // Validate the password option
-    // The password option must be a non-empty string or undefined.
-    if (typeof password !== "undefined" && (typeof password !== "string" || !/.+/.test(password))) {
-        throw new TypeError('Node option "password" must be a non-empty string.');
+    if (typeof password !== "string" || !password.trim() || /[^\x20-\x7e]/.test(password)) {
+        throw new TypeError("A Lavalink node password is required.");
     }
-    // Validate the port option
-    // The port option must be a number or undefined.
-    if (typeof port !== "undefined" && typeof port !== "number") {
-        throw new TypeError('Node option "port" must be a number.');
+    if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) throw new RangeError("Invalid Lavalink port.");
+    if (nodePriority !== undefined && (!Number.isFinite(nodePriority) || nodePriority < 0)) throw new RangeError("Invalid Lavalink node priority.");
+    for (const key of ["enableSessionResumeOption", "useSSL"]) {
+        if (options[key] !== undefined && typeof options[key] !== "boolean") throw new TypeError(key + " must be a boolean.");
     }
-    // Validate the enableSessionResumeOption option
-    // The enableSessionResumeOption option must be a boolean or undefined.
-    if (typeof enableSessionResumeOption !== "undefined" && typeof enableSessionResumeOption !== "boolean") {
-        throw new TypeError('Node option "enableSessionResumeOption" must be a boolean.');
+    for (const [key, minimum, maximum] of [
+        ["sessionTimeoutMs", 1, 2147483647], ["apiRequestTimeoutMs", 1, 2147483647],
+        ["retryDelayMs", 0, 60000], ["maxRetryAttempts", 0, 1000],
+    ]) {
+        const value = options[key];
+        if (value !== undefined && (!Number.isSafeInteger(value) || value < minimum || value > maximum)) {
+            throw new RangeError("Invalid Lavalink node option: " + key);
+        }
     }
-    // Validate the sessionTimeoutMs option
-    // The sessionTimeoutMs option must be a number or undefined.
-    if (typeof sessionTimeoutMs !== "undefined" && typeof sessionTimeoutMs !== "number") {
-        throw new TypeError('Node option "sessionTimeoutMs" must be a number.');
-    }
-    // Validate the maxRetryAttempts option
-    // The maxRetryAttempts option must be a number or undefined.
-    if (typeof maxRetryAttempts !== "undefined" && typeof maxRetryAttempts !== "number") {
-        throw new TypeError('Node option "maxRetryAttempts" must be a number.');
-    }
-    // Validate the retryDelayMs option
-    // The retryDelayMs option must be a number or undefined.
-    if (typeof retryDelayMs !== "undefined" && typeof retryDelayMs !== "number") {
-        throw new TypeError('Node option "retryDelayMs" must be a number.');
-    }
-    // Validate the apiRequestTimeoutMs option
-    // The apiRequestTimeoutMs option must be a number or undefined.
-    if (typeof apiRequestTimeoutMs !== "undefined" && typeof apiRequestTimeoutMs !== "number") {
-        throw new TypeError('Node option "apiRequestTimeoutMs" must be a number.');
-    }
-    // Validate the useSSL option
-    // The useSSL option must be a boolean or undefined.
-    if (typeof useSSL !== "undefined" && typeof useSSL !== "boolean") {
-        throw new TypeError('Node option "useSSL" must be a boolean.');
-    }
-    // Validate the nodePriority option
-    // The nodePriority option must be a number or undefined.
-    if (typeof nodePriority !== "undefined" && typeof nodePriority !== "number") {
-        throw new TypeError('Node option "nodePriority" must be a number.');
-    }
+    try { new URL("http://" + host); }
+    catch { throw new TypeError("Invalid Lavalink host."); }
 }
+exports.default = nodeCheck;

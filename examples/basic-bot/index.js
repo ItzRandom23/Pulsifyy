@@ -1,5 +1,5 @@
 const { Client, GatewayIntentBits, Events } = require("discord.js");
-const { Manager, SearchPlatform, LoadTypes } = require("pulsify");
+const { Manager, SearchPlatform, LoadTypes } = require("pulsifyy");
 
 const { DISCORD_TOKEN, LAVALINK_PASSWORD } = process.env;
 if (!DISCORD_TOKEN || !LAVALINK_PASSWORD) {
@@ -20,7 +20,7 @@ const manager = new Manager({
 
 manager.on("nodeConnect", node => console.log(`Lavalink connected: ${node.options.identifier}`));
 manager.on("nodeError", (node, error) => console.error("Lavalink error:", error));
-manager.on("trackError", (player, track, error) => console.error("Track error:", error));
+manager.on("trackError", (player, track) => console.error("Track failed in guild", player.guildId, track.title));
 manager.on("trackStart", (player, track) => {
   client.channels.cache.get(player.textChannelId)?.send({
     content: `Now playing: ${track.title}`, allowedMentions: { parse: [] },
@@ -51,6 +51,13 @@ client.on(Events.MessageCreate, message => {
     if (command === "play") {
       const query = args.join(" ");
       if (!query) return message.reply("Use !play followed by a song name or link.");
+      if (/^https?:\/\//i.test(query)) {
+        let url;
+        try { url = new URL(query); } catch { return message.reply("Enter a valid SoundCloud link."); }
+        if (url.origin !== "https://soundcloud.com" || url.username || url.password) {
+          return message.reply("Use a song name or an HTTPS soundcloud.com link.");
+        }
+      }
       const result = await manager.search(query, message.author, ["soundcloud"]);
       if (!result.tracks.length) return message.reply("No playable tracks found. Check your Lavalink source configuration.");
       player ||= manager.create({ guildId, voiceChannelId: voice.id,
@@ -81,3 +88,13 @@ client.on(Events.MessageCreate, message => {
 });
 
 client.login(DISCORD_TOKEN).catch(console.error);
+
+let shutdown;
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.once(signal, () => {
+    shutdown ??= manager.handleShutdown().catch(error => {
+      console.error(error.message);
+      process.exitCode = 1;
+    }).finally(() => client.destroy());
+  });
+}

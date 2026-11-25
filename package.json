@@ -1,44 +1,33 @@
 {
-	"name": "pulsify",
-	"version": "1.0.0",
+	"name": "pulsifyy",
+	"version": "0.1.1",
 	"description": "A Lavalink v4 client for Discord music bots with autoplay, filters, and session recovery.",
-	"main": "dist/index.js",
-	"types": "dist/index.d.ts",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
 	"files": [
 		"dist",
-		"scripts",
-		"CHANGELOG.md"
+		"docs/*.md"
 	],
 	"scripts": {
-		"build": "node scripts/check.js",
-		"lint": "node scripts/check.js",
-		"test": "node --test",
-		"ci": "npm run lint && npm test"
+		"build": "node scripts/check.js && npm run typecheck",
+		"lint": "eslint . --max-warnings 0",
+		"typecheck": "tsc --noEmit",
+		"test": "node --test \"test/*.test.js\"",
+		"ci": "npm run build && npm run lint && npm test"
 	},
 	"devDependencies": {
-		"@favware/rollup-type-bundler": "^4.0.0",
-		"@types/lodash": "^4.17.16",
-		"@types/node": "^22.13.11",
-		"@types/ws": "^8.18.0",
-		"@typescript-eslint/eslint-plugin": "^8.27.0",
-		"@typescript-eslint/parser": "^8.27.0",
-		"eslint": "^9.23.0",
-		"npm-run-all": "^4.1.5",
-		"typedoc": "^0.27.9",
-		"typedoc-plugin-no-inherit": "^1.5.0",
-		"typescript": "^5.8.2"
+		"@types/node": "^22.0.0",
+		"discord.js": "^14.0.0",
+		"eslint": "^10.15.0",
+		"typescript": "^7.0.2"
 	},
 	"dependencies": {
 		"@discordjs/collection": "^2.1.1",
-		"axios": "^1.8.4",
-		"events": "^3.3.0",
-		"fs": "^0.0.1-security",
-		"jsdom": "^26.0.0",
-		"lodash": "^4.17.21",
-		"path": "^0.12.7",
+		"@types/ws": "^8.18.1",
+		"axios": "^1.21.1",
+		"parse5": "^8.0.0",
 		"tslib": "^2.8.1",
-		"undici": "^7.8.0",
-		"ws": "^8.18.1"
+		"ws": "^8.23.0"
 	},
 	"peerDependencies": {
 		"discord.js": ">=13.0.0 <15.0.0"
@@ -46,45 +35,11 @@
 	"engines": {
 		"node": ">=22.19.0"
 	},
-	"eslintConfig": {
-		"root": true,
-		"parser": "@typescript-eslint/parser",
-		"plugins": [
-			"@typescript-eslint"
-		],
-		"rules": {
-			"object-curly-spacing": [
-				"error",
-				"always"
-			]
-		},
-		"extends": [
-			"eslint:recommended",
-			"plugin:@typescript-eslint/recommended"
-		]
-	},
 	"keywords": [
-		"lavalink client",
-		"wrapper",
-		"typescript",
-		"discord.js",
-		"node.js",
-		"java",
-		"javascript",
-		"audio streaming",
-		"music bot",
-		"voice chat",
-		"discord integration",
-		"high performance",
-		"scalable",
-		"easy-to-use",
-		"feature-rich",
-		"cross-platform",
-		"seamless integration",
-		"community support",
-		"documentation",
-		"open-source",
 		"lavalink",
+		"discord",
+		"music",
+		"audio",
 		"pulsify"
 	],
 	"repository": {
@@ -96,5 +51,24 @@
 	"homepage": "https://github.com/ItzRandom23/Pulsify#readme",
 	"bugs": {
 		"url": "https://github.com/ItzRandom23/Pulsify/issues"
+	},
+	"exports": {
+		".": {
+			"import": {
+				"types": "./dist/index.d.mts",
+				"default": "./dist/index.mjs"
+			},
+			"require": {
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.js"
+			}
+		},
+		"./dist/*": "./dist/*",
+		"./package.json": "./package.json"
+	},
+	"peerDependenciesMeta": {
+		"discord.js": {
+			"optional": true
+		}
 	}
 }

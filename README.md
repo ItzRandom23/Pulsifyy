@@ -1,56 +1,50 @@
 # Pulsify
 
-Pulsify is a Lavalink v4 wrapper for Node.js and Discord music bots, maintained by ItzRandom23.
+> **Use YouTube and YouTube Music at your own risk.** In 2021, YouTube sent cease-and-desist notices to the operators of the original Groovy and Rythm Discord music bots. Both bots shut down. Review YouTube's terms and only use content you have permission to play. [YouTube Terms of Service](https://www.youtube.com/t/terms) · [Groovy coverage](https://www.theverge.com/2021/8/24/22640024/youtube-discord-groovy-music-bot-closure) · [Rythm coverage](https://www.theverge.com/2021/9/12/22669502/youtube-discord-rythm-music-bot-closure)
 
-## Start here
+Pulsify is a Lavalink v4 client for Discord music bots. It handles voice connections, queues, playback controls, audio filters, autoplay, and node recovery.
 
-New to Pulsify? [Build your first music bot](docs/getting-started.md), from Lavalink setup to your first playing track.
+## Supported sources
 
-- [Runnable discord.js 14 example](examples/basic-bot/index.js)
-- [Usage reference](docs/usage.md): sources, player controls, events, autoplay, and recovery
-- [Troubleshooting](docs/troubleshooting.md)
+| Feature | Sources |
+| --- | --- |
+| Search | Apple Music, Audiomack, Bandcamp, Deezer, Gaana, JioSaavn, SoundCloud, Spotify, Tidal, VK Music, YouTube, and YouTube Music |
+| Autoplay | Deezer, JioSaavn, SoundCloud, Spotify, Tidal, and VK Music. Last.fm is an optional recommendation fallback with an API key. |
+| Direct links | HTTP(S) links your Lavalink server can load |
 
-## Installation
+Install PulseLink on your Lavalink server to use its Apple Music, Audiomack, Deezer, Gaana, JioSaavn, SoundCloud, Spotify, Tidal, and VK Music providers. Enable the providers you want and configure their credentials or playback mirrors where required. Deezer is Pulsify's default text search source. [PulseLink setup and provider requirements](https://github.com/ItzRandom23/PulseLink#quick-start)
 
-Requires Node.js 22.19 or newer and discord.js 13 or 14.
+Lavalink includes built-in Bandcamp and SoundCloud sources. Enable `bandcamp` for Bandcamp or `soundcloud` and `soundcloudSearchEnabled` for standalone SoundCloud search. Choose one SoundCloud source per node when configuring PulseLink. [Lavalink source configuration](https://lavalink.dev/configuration/config/file)
 
-Install the GitHub v1.0.0 release:
+For YouTube and YouTube Music search, install and enable the Lavalink `youtube-source` plugin and allow search. Include its `MUSIC` client for YouTube Music search. [Lavalink YouTube plugin setup](https://github.com/lavalink-devs/youtube-source#plugin)
+
+## Install
+
+Use Node.js 22.19 or newer and Lavalink v4. The starter bot uses discord.js 14. TypeScript users can use `@types/node@22` with the starter configuration.
+
+Install Pulsify from npm.
 
 ```sh
-npm install github:ItzRandom23/Pulsify#v1.0.0
+npm install pulsifyy discord.js@14
 ```
 
-You can also install the release asset:
+For local testing, run `npm pack` in the Pulsify repo and install the resulting `pulsifyy-0.1.1.tgz` from your bot project.
 
-```sh
-npm install ./pulsify-1.0.0.tgz
-```
+## Use Pulsify
 
-## Usage
+Create a `Manager` with your Lavalink nodes and a `send` callback that forwards voice packets to the Discord shard for each guild. Read Lavalink passwords from your application's configuration. Forward Discord raw voice events to `manager.updateVoiceState(packet)`, call `manager.init(client.user.id)` once Discord is ready, and wait for `nodeConnect` before searching.
 
 ```js
-const { Manager, LoadTypes, StateTypes } = require("pulsify");
+const { SearchPlatform } = require("pulsifyy");
+
+// Run these after Lavalink is ready.
+const videos = await manager.search("song name", requester, SearchPlatform.YouTube);
+const music = await manager.search("song name", requester, SearchPlatform.YouTubeMusic);
 ```
 
-The exported Manager, Player, Node, Queue, TrackUtils, and filter APIs are preserved. Configure the manager with your Lavalink nodes and Discord voice packet sender as before.
+Your bot needs the Guilds and Guild Voice States intents. Call `await manager.handleShutdown()` when your bot shuts down. [Set up and run the starter bot](docs/getting-started.md)
 
-## Upgrading from Magmastream
+- [Player controls, configuration, and events](docs/usage.md)
+- [Troubleshooting](docs/troubleshooting.md)
 
-- Replace the `magmastream` dependency with `pulsify`.
-- Change imports from `require("magmastream")` to `require("pulsify")`, or the equivalent ES module import.
-- Existing `magmastream/` session data is reused automatically. New installations store session data in `pulsify/`. If both directories exist, Pulsify uses `pulsify/`.
-- Keep your existing bot playback coordinator and queue safeguards. Those bot-level fixes are separate from the wrapper.
-
-## Development
-
-This repository currently distributes checked-in JavaScript in `dist/` and TypeScript declarations in `dist/index.d.ts`; TypeScript source is not included. `npm run build` validates the checked-in JavaScript rather than compiling unavailable source.
-
-```sh
-npm ci
-npm run ci
-npm pack
-```
-
-## Credits and license
-
-Pulsify is derived from Magmastream, with customizations maintained by [ItzRandom23](https://github.com/ItzRandom23). Credit to the original Magmastream team. Distributed under the existing Apache-2.0 license; see [LICENSE](LICENSE).
+Pulsify is derived from Magmastream and maintained by ItzRandom23. Credit goes to the original Magmastream team. The [Apache-2.0 license](LICENSE) applies.

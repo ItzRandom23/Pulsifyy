@@ -7,14 +7,14 @@ Start with [getting started](getting-started.md) for a complete runnable bot. Pu
 Each node accepts `identifier`, `host`, `port`, `password`, and `useSSL`. The host contains only the hostname or IP, without a URL scheme. Use `useSSL: true` for a TLS endpoint. Lavalink passwords must match the server configuration.
 
 ```js
-const { SearchPlatform } = require("pulsify");
+const { SearchPlatform } = require("pulsifyy");
 // Set this in Manager options:
 // defaultSearchPlatform: SearchPlatform.SoundCloud
 const result = await manager.search("song name", requester, ["soundcloud"]);
 const player = manager.players.get(guildId);
 ```
 
-The wrapper understands source names such as `soundcloud`, `deezer`, `spotify`, and `jiosaavn`. Availability depends on your node's installed plugins and configuration. Metadata support does not guarantee a playable stream; some providers require mirror sources or credentials. HTTP links are passed through to Lavalink.
+Use the exported `SearchPlatform` values to select a search provider. Availability and playback depend on the sources and plugins enabled on your Lavalink server. Pulsify forwards direct HTTP(S) links to Lavalink. [Supported sources and plugin setup](../README.md#supported-sources)
 
 ## Player controls
 
@@ -53,8 +53,41 @@ Autoplay requires available recommendation sources. Configure `autoPlaySearchPla
 
 Event emitters do not await promises returned by your listeners. Catch errors inside asynchronous listeners, including Discord message sends.
 
+
+## Configuration
+
+| Options | Behavior |
+| --- | --- |
+| `nodes`, `send` | Declare Lavalink nodes and route Discord gateway packets to the guild's shard. Each node needs a password. |
+| `useNode`, `enablePriorityMode`, `nodePriority` | Select by least players, least CPU load, or weighted node priority. |
+| `apiRequestTimeoutMs` | Node request and handshake timeout. Default 10,000 ms. |
+| `maxRetryAttempts`, `retryDelayMs` | Up to 10 reconnects by default, starting at 1,000 ms and backing off to 60 seconds. |
+| `trackCacheMaxEntries`, `trackCacheTtlMs` | Up to 128 small track/search results for 300,000 ms by default. Set either to 0 to disable caching. |
+| `maxQueueSize`, `maxPreviousTracks` | Defaults to 10,000 current and upcoming tracks per guild and 20 previous tracks. |
+| `playerInactivityTimeoutMs` | Clears idle players after 300,000 ms by default. Set to 0 to disable. |
+| `trackRetryAttempts`, `trackErrorRecovery` | Retry a track that fails to load twice by default. A callback can recover an exception or stuck track by replacing playback and returning true. |
+| `trackPartial` | Keep the configured track fields. Pulsify always keeps the encoded track. |
+| `lastFmApiKey`, `autoPlaySearchPlatforms` | Configure optional recommendations. Sources and plugins must be available on the node. |
+
+Use `manager.get`, `manager.destroy`, `manager.createNode`, and `manager.destroyNode` to look up or manage live objects. `Manager.decodeTrack(s)` returns decoded Lavalink metadata. `manager.loadPlaylistInChunks` yields to the event loop between inserts. Connect only after `nodeConnect` and await controls that change remote state. Use `player.previous()`, `restart()`, `stop(amount)`, and the filter API in addition to the basic commands above.
+
 ## Session recovery
 
-Enable `enableSessionResumeOption` on a node to request session resuming; `sessionTimeoutMs` controls the resume timeout. Recovery also depends on the server preserving its session and your bot's lifecycle. New installations store data under `pulsify/`. Upgrades reuse an existing `magmastream/` directory if no `pulsify/` directory exists. Keep the active data directory between restarts.
+Set `enableSessionResumeOption` on the node. `sessionTimeoutMs` defaults to 60,000 ms. During a reconnect, Pulsify first attempts to resume on the same node. When the previous session survives, current playback stays in place. For a fresh session, Pulsify can reapply in-memory state or reconstruct recent saved players and request fresh voice connections. If reconnects are exhausted, Pulsify tries other ready nodes and disposes players it could not move.
 
-Pulsify registers SIGINT/SIGTERM handlers that save players during shutdown. Custom process managers and sharded bots should coordinate their shutdown lifecycle with these handlers.
+Call `await manager.handleShutdown()` before exiting. Configure bot or cluster-specific persistence with `sessionDataPath` and a stable `manager.init(clientId, clusterId)`. The default data root is `pulsify/`, or existing `magmastream/` if there is no `pulsify/` directory. New files are scoped by bot and cluster. A legacy player file can migrate when Lavalink confirms the session and guild. Treat old snapshots as sensitive.
+
+## Additional events
+
+| Event | Arguments |
+| --- | --- |
+| `nodeCreate`, `nodeDestroy`, `nodeReconnect` | `node` |
+| `nodeDisconnect` | `node, { code, reason }` |
+| `nodeRaw`, `debug` | `payload` or `message` |
+| `playerCreate`, `playerDestroy` | `player` |
+| `playerStateUpdate` | `oldPlayer, newPlayer, change` |
+| `playerMove` | `player, oldChannelId, newChannelId` |
+| `playerDisconnect` | `player, oldChannelId` |
+| `trackStuck` | `player, track, payload` |
+| `socketClosed` | `player, payload` |
+| `segmentsLoaded`, `segmentSkipped`, `chapterStarted`, `chaptersLoaded` | `player, track, payload` |

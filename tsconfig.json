@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["dist/*.d.ts", "dist/*.d.mts", "test/types/*.mts", "test/types/*.cts"]
+}

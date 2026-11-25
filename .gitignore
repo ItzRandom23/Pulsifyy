@@ -4,3 +4,8 @@ pulsify/
 magmastream/
 .release-smoke/
 .env
+.env.*
+!.env.example
+.npmrc
+*.log
+release/

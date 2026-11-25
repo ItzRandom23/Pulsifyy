@@ -4,7 +4,7 @@ Pulsify connects your Discord bot to Lavalink. Your bot handles commands and voi
 
 ## 1. Prepare the tools
 
-You need Node.js 22.19 or newer, a Discord bot token, and a working Lavalink v4 server. Pulsify supports discord.js 13 and 14; the example uses version 14. Obtain the server release and Java requirements from [Lavalink's installation guide](https://lavalink.dev/getting-started/index.html).
+You need Node.js 22.19 or newer, a Discord bot token, and a working Lavalink 4.2.2 server. Pulsify supports discord.js 13 and 14; the example uses version 14. Obtain the server release and Java requirements from [Lavalink's installation guide](https://lavalink.dev/getting-started/index.html).
 
 For a local Lavalink server, create `application.yml` beside `Lavalink.jar`:
 
@@ -21,7 +21,7 @@ lavalink:
     soundcloudSearchEnabled: true
 ```
 
-Start it with `java -jar Lavalink.jar`. Use the same password in the bot configuration. This local example uses Lavalink's SoundCloud source; Pulsify does not install server plugins. For PulseLink or other source plugins, follow their configuration instructions and avoid registering competing handlers for the same source. See the [official Lavalink configuration reference](https://lavalink.dev/configuration/config/file).
+Start it with `java -jar Lavalink.jar`. Use the same password in the bot configuration. This example uses Lavalink's built-in SoundCloud source. For the other providers in the PulseLink setup, install PulseLink on the Lavalink server and enable the sources you want. [Supported sources and server setup](../README.md#supported-sources)
 
 ## 2. Configure Discord
 
@@ -31,11 +31,11 @@ The example requests Guilds, GuildVoiceStates, GuildMessages, and MessageContent
 
 ## 3. Install Pulsify
 
-In a new bot directory:
+After the npm release is published, install in a new bot directory. For the local candidate, install the tarball produced by `npm pack`.
 
 ```sh
 npm init -y
-npm install discord.js@14 github:ItzRandom23/Pulsify#v1.0.0
+npm install discord.js@14 pulsifyy
 ```
 
 Download or copy [the complete example](../examples/basic-bot/index.js) as `index.js`, and [.env.example](../examples/basic-bot/.env.example) as `.env`. Enter your bot token and Lavalink settings. Keep `.env` out of version control by adding it to your bot project's `.gitignore`.

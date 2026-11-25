@@ -5,17 +5,19 @@ const tslib_1 = require("tslib");
 const Utils_1 = require("./Utils");
 const collection_1 = require("@discordjs/collection");
 const events_1 = require("events");
-const __1 = require("..");
+const { Plugin } = require("./Plugin");
 const managerCheck_1 = tslib_1.__importDefault(require("../utils/managerCheck"));
 const promises_1 = tslib_1.__importDefault(require("fs/promises"));
 const path_1 = tslib_1.__importDefault(require("path"));
-const { fetch } = require("undici");
+const { randomUUID } = require("node:crypto");
+const { scopePath, dataRoot } = require("../utils/sessionData");
+const removedSearchSources = new Set(["amazonmusic", "amazon-music", "amzsearch", "qobuz", "qbsearch"]);
 /**
  * The main hub for interacting with Lavalink and using Pulsify,
  */
 class Manager extends events_1.EventEmitter {
-    static activeManagers = new Set();
-    static signalHandlersRegistered = false;
+    shutdownTask;
+    inactivityTimer;
     /** The map of players. */
     players = new collection_1.Collection();
     /** The map of nodes. */
@@ -27,15 +29,13 @@ class Manager extends events_1.EventEmitter {
     /** The options that were set. */
     options;
     initiated = false;
-    voiceUpdateDedupCache = new Map();
-    voiceUpdateDedupWindowMs = 3000;
     /**
      * Initiates the Manager class.
      * @param options
      * @param options.enabledPlugins - An array of enabledPlugins to load.
      * @param options.nodes - An array of node options to create nodes from.
      * @param options.playNextOnEnd - Whether to automatically play the first track in the queue when the player is created.
-     * @param options.autoPlaySearchPlatforms - The search platform autoplay will use. Fallback to Youtube if not found.
+     * @param options.autoPlaySearchPlatforms - The recommendation sources autoplay will use in order.
      * @param options.enablePriorityMode - Whether to use the priority when selecting a node to play on.
      * @param options.clientName - The name of the client to send to Lavalink.
      * @param options.defaultSearchPlatform - The default search platform to use when searching for tracks.
@@ -49,71 +49,51 @@ class Manager extends events_1.EventEmitter {
         (0, managerCheck_1.default)(options);
         Utils_1.Structure.get("Player").init(this);
         Utils_1.Structure.get("Node").init(this);
-        Utils_1.TrackUtils.init(this);
         Utils_1.AutoPlayUtils.init(this);
-        if (options.trackPartial) {
-            Utils_1.TrackUtils.setTrackPartial(options.trackPartial);
-            delete options.trackPartial;
-        }
+        const { lastFmApiKey, ...settings } = options;
         this.options = {
             enabledPlugins: [],
-            nodes: [
-                {
-                    identifier: "default",
-                    host: "localhost",
-                    enableSessionResumeOption: false,
-                    sessionTimeoutMs: 3600000,
-                },
-            ],
+            nodes: [],
             playNextOnEnd: true,
             enablePriorityMode: false,
             clientName: "Pulsify",
             defaultSearchPlatform: SearchPlatform.Deezer,
             autoPlaySearchPlatforms: [AutoPlayPlatform.Spotify, AutoPlayPlatform.Deezer, AutoPlayPlatform.Jiosaavn],
             useNode: UseNodeOptions.LeastPlayers,
+            ...settings,
             maxPreviousTracks: options.maxPreviousTracks ?? 20,
             playerInactivityTimeoutMs: options.playerInactivityTimeoutMs ?? 300000,
             trackCacheTtlMs: options.trackCacheTtlMs ?? 300000,
+            trackCacheMaxEntries: options.trackCacheMaxEntries ?? 128,
+            maxQueueSize: options.maxQueueSize ?? 10000,
             trackRetryAttempts: options.trackRetryAttempts ?? 2,
             logLevel: options.logLevel ?? "info",
-            ...options,
         };
-        if (this.options.nodes) {
-            for (const nodeOptions of this.options.nodes)
-                new (Utils_1.Structure.get("Node"))(nodeOptions);
-        }
-        Manager.activeManagers.add(this);
-        if (!Manager.signalHandlersRegistered) {
-            Manager.signalHandlersRegistered = true;
-            process.once("SIGINT", async () => {
-                console.warn("\x1b[33mSIGINT received! Graceful shutdown initiated...\x1b[0m");
-                try {
-                    await Promise.allSettled(Array.from(Manager.activeManagers, (manager) => manager.handleShutdown()));
-                    console.warn("\x1b[32mShutdown complete. Waiting for Node.js event loop to empty...\x1b[0m");
-                    // Prevent forced exit by Windows
-                    setTimeout(() => {
-                        process.exit(0);
-                    }, 2000);
-                }
-                catch (error) {
-                    console.error("Error during shutdown:", error);
-                    process.exit(1);
-                }
-            });
-            process.once("SIGTERM", async () => {
-                console.warn("\x1b[33mSIGTERM received! Graceful shutdown initiated...\x1b[0m");
-                try {
-                    await Promise.allSettled(Array.from(Manager.activeManagers, (manager) => manager.handleShutdown()));
-                    console.warn("\x1b[32mShutdown complete. Exiting now...\x1b[0m");
-                    process.exit(0);
-                }
-                catch (error) {
-                    console.error("Error during SIGTERM shutdown:", error);
-                    process.exit(1);
-                }
-            });
-        }
+        Object.defineProperty(this.options, "lastFmApiKey", { value: lastFmApiKey, writable: true });
+        this.options.nodes = (options.nodes ?? []).map(nodeOptions => this.createNode(nodeOptions).options);
     }
+
+    watchInactivePlayers() {
+        const timeout = this.options.playerInactivityTimeoutMs;
+        if (!timeout || this.inactivityTimer) return;
+        this.inactivityTimer = setInterval(() => {
+            const now = Date.now();
+            for (const player of this.players.values()) {
+                if (!player.destroyRequested && !player.playing && !player.paused &&
+                    now - player.lastActivityAt >= timeout) {
+                    player.destroy().catch(error => player.node.error(error));
+                }
+            }
+        }, Math.min(Math.max(1000, timeout / 2), 30000));
+        this.inactivityTimer.unref();
+    }
+
+    stopWatchingIdlePlayers() {
+        if (this.players.size) return;
+        clearInterval(this.inactivityTimer);
+        this.inactivityTimer = undefined;
+    }
+
     log(level, message, ...args) {
         const levels = { error: 0, warn: 1, info: 2, debug: 3 };
         const configured = levels[this.options?.logLevel] ?? levels.info;
@@ -127,6 +107,7 @@ class Manager extends events_1.EventEmitter {
      * @returns The manager instance.
      */
     init(clientId, clusterId = 0) {
+        if (this.shutdownTask) throw new Error("This manager has shut down.");
         if (this.initiated) {
             return this;
         }
@@ -134,27 +115,20 @@ class Manager extends events_1.EventEmitter {
             throw new Error('"clientId" must be a valid Discord client ID.');
         }
         this.options.clientId = clientId;
-        if (typeof clusterId !== "number") {
+        if (!Number.isSafeInteger(clusterId) || clusterId < 0) {
             console.warn('"clusterId" is not a valid number, defaulting to 0.');
             clusterId = 0;
         }
         this.options.clusterId = clusterId;
-        for (const node of this.nodes.values()) {
-            try {
-                node.connect(); // Connect the node
-            }
-            catch (err) {
-                this.emit(ManagerEventTypes.NodeError, node, err);
-            }
+        const plugins = this.options.enabledPlugins ?? [];
+        for (const [index, plugin] of plugins.entries()) {
+            if (!(plugin instanceof Plugin)) throw new TypeError("Invalid plugin at index " + index);
         }
-        if (this.options.enabledPlugins) {
-            for (const [index, plugin] of this.options.enabledPlugins.entries()) {
-                if (!(plugin instanceof __1.Plugin))
-                    throw new RangeError(`Plugin at index ${index} does not extend Plugin.`);
-                plugin.load(this);
-            }
-        }
+        for (const plugin of plugins) plugin.load(this);
         this.initiated = true;
+        for (const node of this.nodes.values()) {
+            try { node.connect(); } catch (error) { this.emit(ManagerEventTypes.NodeError, node, error); }
+        }
         return this;
     }
     /**
@@ -170,63 +144,50 @@ class Manager extends events_1.EventEmitter {
         if (!node) throw new Error("No available nodes.");
 
         const _query = typeof query === "string" ? { query } : query;
-
-        const sourcePrefixMap = {
-            soundcloud: "scsearch",
-            deezer: "dzsearch",
-            spotify: "spsearch",
-            jiosaavn: "jssearch",
-            applemusic: "amsearch",
-            audiomack: "admsearch",
-            amazonmusic: "amzsearch",
-            gaana: "gnsearch",
-            qobuz: "qbsearch",
-            tidal: "tdsearch",
-        };
-
-        const platforms = Array.isArray(sourcePlatforms)
-            ? sourcePlatforms
-            : [sourcePlatforms ?? _query.source ?? this.options.defaultSearchPlatform];
-
-        const hasYouTubeUrl = /(?:youtube\.com|youtu\.be)/i.test(_query.query);
-        const hasYouTubeSource = platforms.some((platform) => {
-            const normalized = String(platform).toLowerCase();
-            return normalized === "youtube" || normalized === "ytmusic" || normalized === "ytsearch" || normalized === "ytmsearch";
-        });
-        if (hasYouTubeUrl || hasYouTubeSource) {
-            this.emit(ManagerEventTypes.Debug, `[MANAGER] YouTube support is disabled. Query rejected: ${_query.query}`);
-            return {
-                loadType: Utils_1.LoadTypes.Empty,
-                tracks: [],
-                playlist: null
-            };
+        if (typeof _query?.query !== "string" || !_query.query.trim() || _query.query.length > 4096) {
+            throw new TypeError("Search query must be a non-empty string of at most 4096 characters.");
         }
+        const value = _query.query.trim();
 
-        for (const platform of platforms) {
-            const prefix = sourcePrefixMap[platform.toLowerCase()] ?? platform;
-            const searchString = /^https?:\/\//.test(_query.query)
-                ? _query.query
-                : `${prefix}:${_query.query}`;
-
-            this.emit(ManagerEventTypes.Debug, `[MANAGER] Trying ${prefix} for: ${_query.query}`);
-
+        let identifiers;
+        if (/^https?:\/\//i.test(value)) {
+            new URL(value);
+            identifiers = [value];
+        } else {
+            const platforms = Array.isArray(sourcePlatforms)
+                ? sourcePlatforms
+                : [sourcePlatforms ?? _query.source ?? this.options.defaultSearchPlatform];
+            identifiers = [];
+            for (const platform of platforms) {
+                if (typeof platform !== "string") continue;
+                const name = platform.trim().toLowerCase();
+                if (removedSearchSources.has(name)) continue;
+                const prefix = searchPlatformAliases.get(name) ?? platform.trim();
+                if (/^[a-z0-9-]+$/i.test(prefix)) identifiers.push(prefix + ":" + value);
+            }
+        }
+        let failure;
+        let empty = !identifiers.length;
+        for (const identifier of identifiers) {
             try {
-                const res = await node.rest.get(`/v4/loadtracks?identifier=${encodeURIComponent(searchString)}`);
-                if (!res || res.loadType === Utils_1.LoadTypes.Empty || res.loadType === Utils_1.LoadTypes.Error) continue;
-
+                const res = await node.rest.get("/v4/loadtracks?identifier=" + encodeURIComponent(identifier));
+                if (res?.loadType === Utils_1.LoadTypes.Empty) {
+                    empty = true;
+                    continue;
+                }
                 let tracks = [];
                 let playlist = null;
 
                 switch (res.loadType) {
                     case Utils_1.LoadTypes.Search:
-                        tracks = res.data.map((track) => Utils_1.TrackUtils.build(track, requester));
+                        tracks = res.data.map((track) => Utils_1.TrackUtils.build(track, requester, this.options.trackPartial ?? null));
                         break;
                     case Utils_1.LoadTypes.Track:
-                        tracks = [Utils_1.TrackUtils.build(res.data, requester)];
+                        tracks = [Utils_1.TrackUtils.build(res.data, requester, this.options.trackPartial ?? null)];
                         break;
                     case Utils_1.LoadTypes.Playlist:
                         const playlistData = res.data;
-                        tracks = playlistData.tracks.map((track) => Utils_1.TrackUtils.build(track, requester));
+                        tracks = playlistData.tracks.map((track) => Utils_1.TrackUtils.build(track, requester, this.options.trackPartial ?? null));
                         playlist = {
                             name: playlistData.info.name,
                             playlistInfo: playlistData.pluginInfo,
@@ -235,17 +196,15 @@ class Manager extends events_1.EventEmitter {
                             duration: tracks.reduce((acc, cur) => acc + (cur.duration || 0), 0),
                         };
                         break;
+                    default:
+                        throw new Error("Lavalink could not load the requested tracks.");
                 }
-
-                const result = { loadType: res.loadType, tracks, playlist };
-                this.emit(ManagerEventTypes.Debug, `[MANAGER] Success on ${platform}: ${_query.query}`);
-                return result;
-            } catch (err) {
-                this.emit(ManagerEventTypes.Debug, `[MANAGER] Failed on ${platform}: ${err.message}`);
-                continue;
+                return { loadType: res.loadType, tracks, playlist };
+            } catch (error) {
+                failure = error;
             }
         }
-
+        if (failure && !empty) throw failure;
         return {
             loadType: Utils_1.LoadTypes.Empty,
             tracks: [],
@@ -260,12 +219,12 @@ class Manager extends events_1.EventEmitter {
      * @returns The created player.
      */
     create(options) {
+        if (!options || typeof options !== "object") throw new TypeError("Player options are required.");
         if (this.players.has(options.guildId)) {
             return this.players.get(options.guildId);
         }
-        // Create a new player with the given options
-        this.emit(ManagerEventTypes.Debug, `[MANAGER] Creating new player with options: ${JSON.stringify(options)}`);
-        return new (Utils_1.Structure.get("Player"))(options);
+        if (this.shutdownTask) throw new Error("This manager has shut down.");
+        return Utils_1.Structure.create("Player", options, this);
     }
     /** Loads a playlist and appends it to a player in event-loop-friendly chunks. */
     async loadPlaylistInChunks(player, query, requester, sourcePlatforms, chunkSize = 100) {
@@ -275,7 +234,9 @@ class Manager extends events_1.EventEmitter {
             throw new RangeError("chunkSize must be a positive integer.");
         const result = await this.search(query, requester, sourcePlatforms);
         const tracks = result.playlist?.tracks ?? result.tracks ?? [];
+        if (player.queue.totalSize + tracks.length > this.options.maxQueueSize) throw new RangeError("Queue limit exceeded.");
         for (let index = 0; index < tracks.length; index += chunkSize) {
+            if (player.destroyRequested) throw new Error("Player was destroyed.");
             player.queue.add(tracks.slice(index, index + chunkSize));
             await new Promise((resolve) => setImmediate(resolve));
         }
@@ -301,8 +262,7 @@ class Manager extends events_1.EventEmitter {
         if (player) {
             await player.destroy();
         }
-        // Clean up any inactive players
-        await this.cleanupInactivePlayers();
+
     }
     /**
      * Creates a new node or returns an existing one if it already exists.
@@ -310,15 +270,16 @@ class Manager extends events_1.EventEmitter {
      * @returns The created node.
      */
     createNode(options) {
+        if (!options || typeof options !== "object") throw new TypeError("Node options are required.");
         // Check if the node already exists in the manager's collection
         if (this.nodes.has(options.identifier || options.host)) {
             // Return the existing node if it does
             return this.nodes.get(options.identifier || options.host);
         }
-        // Emit a debug event for node creation
-        this.emit(ManagerEventTypes.Debug, `[MANAGER] Creating new node with options: ${JSON.stringify(options)}`);
-        // Create a new node with the given options
-        return new (Utils_1.Structure.get("Node"))(options);
+        if (this.shutdownTask) throw new Error("This manager has shut down.");
+        const node = Utils_1.Structure.create("Node", options, this);
+        if (this.initiated) node.connect();
+        return node;
     }
     /**
      * Destroys a node if it exists. Emits a debug event if the node is found and destroyed.
@@ -332,7 +293,6 @@ class Manager extends events_1.EventEmitter {
             return;
         this.emit(ManagerEventTypes.Debug, `[MANAGER] Destroying node: ${identifier}`);
         await node.destroy();
-        this.nodes.delete(identifier);
     }
     /**
      * Attaches an event listener to the manager.
@@ -350,28 +310,57 @@ class Manager extends events_1.EventEmitter {
      * @emits {debug} - Emits a debug message indicating the voice state is being updated.
      */
     async updateVoiceState(data) {
-        if (!this.isVoiceUpdate(data))
-            return;
-        const update = "d" in data ? data.d : data;
-        if (!this.isValidUpdate(update))
-            return;
+        if (!data || typeof data !== "object" || this.shutdownTask) return;
+        if ("t" in data && data.t !== "VOICE_STATE_UPDATE" && data.t !== "VOICE_SERVER_UPDATE") return;
+        const update = "t" in data ? data.d : data;
+        if (!update || typeof update.guild_id !== "string") return;
         const player = this.players.get(update.guild_id);
-        if (!player)
-            return;
-        this.emit(ManagerEventTypes.Debug, `[MANAGER] Updating voice state: ${JSON.stringify(update)}`);
-        if ("token" in update) {
-            return await this.handleVoiceServerUpdate(player, update);
-        }
-        if (update.user_id !== this.options.clientId)
-            return;
-        if (!player.voiceState.sessionId && player.voiceState.event) {
-            if (player.state !== Utils_1.StateTypes.Disconnected) {
-                await player.destroy();
+        if (!player || player.destroyRequested) return;
+
+        if (typeof update.token === "string" && (update.endpoint === null || typeof update.endpoint === "string")) {
+            player.voiceState.event = { token: update.token, endpoint: update.endpoint };
+            if (!update.endpoint) player.voiceState.sent = undefined;
+        } else {
+            if (!this.options.clientId || update.user_id !== this.options.clientId) return;
+            if (update.channel_id === null) {
+                this.emit(ManagerEventTypes.PlayerDisconnect, player, player.voiceChannelId);
+                await player.destroy(false);
+                return;
             }
-            return;
+            if (typeof update.channel_id !== "string" || typeof update.session_id !== "string" || !update.session_id) return;
+            const previous = player.voiceChannelId;
+            const current = update.channel_id;
+            if (player.voiceState.channelId && player.voiceState.channelId !== current &&
+                player.voiceState.sent?.token === player.voiceState.event?.token &&
+                player.voiceState.sent?.endpoint === player.voiceState.event?.endpoint) {
+                player.voiceState.event = undefined;
+            }
+            player.voiceChannelId = current;
+            player.requestedVoiceChannel = current;
+            player.voiceState.channelId = current;
+            player.voiceState.sessionId = update.session_id;
+            if (previous !== current) this.emit(ManagerEventTypes.PlayerMove, player, previous, current);
         }
-        return await this.handleVoiceStateUpdate(player, update);
+        return this.sendVoiceUpdate(player);
     }
+
+    async sendVoiceUpdate(player) {
+        if (!player.node.sessionId || player.destroyRequested || !player.voiceState.event?.endpoint ||
+            !player.voiceState.sessionId || !player.voiceState.channelId) return;
+        return player.runOperation(async () => {
+            const { event, sessionId, channelId, sent } = player.voiceState;
+            const nodeSession = player.node.sessionId;
+            if (!nodeSession || !event?.token || !event.endpoint || !sessionId || !channelId || channelId !== player.voiceChannelId) return;
+            if (sent?.token === event.token && sent.endpoint === event.endpoint &&
+                sent.sessionId === sessionId && sent.channelId === channelId && sent.node === player.node &&
+                sent.nodeSession === nodeSession) return;
+            await player.node.rest.updatePlayer({
+                guildId: player.guildId, data: { voice: { token: event.token, endpoint: event.endpoint, sessionId, channelId } },
+            });
+            player.voiceState.sent = { ...event, event, sessionId, channelId, node: player.node, nodeSession };
+        });
+    }
+
     /**
      * Decodes an array of base64 encoded tracks and returns an array of TrackData.
      * Emits a debug event with the tracks being decoded.
@@ -380,13 +369,13 @@ class Manager extends events_1.EventEmitter {
      * @throws Will throw an error if no nodes are available or if the API request fails.
      */
     decodeTracks(tracks) {
-        this.emit(ManagerEventTypes.Debug, `[MANAGER] Decoding tracks: ${JSON.stringify(tracks)}`);
+        if (!Array.isArray(tracks) || !tracks.every(track => typeof track === "string" && track)) return Promise.reject(new TypeError("Expected encoded tracks."));
         const node = this.useableNode;
         if (!node)
             return Promise.reject(new Error("No available nodes."));
-        return node.rest.post("/v4/decodetracks", JSON.stringify(tracks)).then((res) => {
-            if (!res)
-                throw new Error("No data returned from query.");
+        return node.rest.post("/v4/decodetracks", tracks).then((res) => {
+            if (!Array.isArray(res))
+                throw new Error("Invalid Lavalink track decode response.");
             return res;
         });
     }
@@ -406,214 +395,93 @@ class Manager extends events_1.EventEmitter {
      * @param {string} guildId - The guild ID of the player to save
      */
     async savePlayerState(guildId) {
+        const player = this.players.get(guildId);
+        if (!player?.voiceChannelId || player.destroyRequested) return;
+        const file = await this.getPlayerFilePath(guildId);
+        const temporary = file + "." + randomUUID() + ".tmp";
         try {
-            const playerStateFilePath = await this.getPlayerFilePath(guildId);
-            const player = this.players.get(guildId);
-            if (!player || player.state === Utils_1.StateTypes.Disconnected || !player.voiceChannelId) {
-                console.warn(`Skipping save for inactive player: ${guildId}`);
-                return;
-            }
-            const serializedPlayer = this.serializePlayer(player);
-            await promises_1.default.writeFile(playerStateFilePath, JSON.stringify(serializedPlayer, null, 2), "utf-8");
-            this.emit(ManagerEventTypes.Debug, `[MANAGER] Player state saved: ${guildId}`);
-        }
-        catch (error) {
-            console.error(`Error saving player state for guild ${guildId}:`, error);
+            await promises_1.default.writeFile(temporary, JSON.stringify(this.serializePlayer(player)), { flag: "wx", mode: 0o600 });
+            if (this.players.get(guildId) === player && !player.destroyRequested) await promises_1.default.rename(temporary, file);
+        } finally {
+            await promises_1.default.rm(temporary, { force: true });
         }
     }
-    /**
-     * Loads player states from the JSON file.
-     * @param nodeId The ID of the node to load player states from.
-     * @returns A promise that resolves when the player states have been loaded.
-     */
-    async loadPlayerStates(nodeId) {
-        this.emit(ManagerEventTypes.Debug, "[MANAGER] Loading saved players.");
+
+    async loadPlayerStates(nodeId, resumed = true) {
         const node = this.nodes.get(nodeId);
-        if (!node)
-            throw new Error(`Could not find node: ${nodeId}`);
-        const info = (await node.rest.getAllPlayers());
-        if (!Array.isArray(info)) {
-            this.emit(ManagerEventTypes.Debug, `[MANAGER] Could not load Lavalink players for node ${nodeId}; skipping saved player restore.`);
-            return;
+        if (!node) throw new Error("Unknown Lavalink node.");
+        const directory = path_1.default.join(scopePath(this), "players");
+        let players;
+        if (resumed) {
+            players = await node.rest.getAllPlayers();
+            if (!Array.isArray(players)) throw new Error("Invalid Lavalink player response.");
+        } else {
+            let files;
+            try { files = await promises_1.default.readdir(directory, { withFileTypes: true }); }
+            catch (error) { if (error.code === "ENOENT") return; throw error; }
+            players = files.filter(file => file.isFile() && /^\d+\.json$/.test(file.name))
+                .map(file => ({ guildId: file.name.slice(0, -5) }));
         }
-        const playerStatesDir = path_1.default.join(require("../utils/sessionData").dataRoot, "dist", "sessionData", "players");
-        try {
-            // Check if the directory exists, and create it if it doesn't
-            await promises_1.default.access(playerStatesDir).catch(async () => {
-                await promises_1.default.mkdir(playerStatesDir, { recursive: true });
-                this.emit(ManagerEventTypes.Debug, `[MANAGER] Created directory: ${playerStatesDir}`);
-            });
-            // Read the contents of the directory
-            const playerFiles = await promises_1.default.readdir(playerStatesDir);
-            // Process each file in the directory
-            for (const file of playerFiles) {
-                const filePath = path_1.default.join(playerStatesDir, file);
-                try {
-                    // Check if the file exists (though readdir should only return valid files)
-                    await promises_1.default.access(filePath);
-                    // Read the file asynchronously
-                    const data = await promises_1.default.readFile(filePath, "utf-8");
-                    const state = JSON.parse(data);
-                    if (state && typeof state === "object" && state.guildId && state.node.options.identifier === nodeId) {
-                        const lavaPlayer = info.find((player) => player.guildId === state.guildId);
-                        if (!lavaPlayer) {
-                            await this.destroy(state.guildId);
-                            continue;
-                        }
-                        const playerOptions = {
-                            guildId: state.options.guildId,
-                            textChannelId: state.options.textChannelId,
-                            voiceChannelId: state.options.voiceChannelId,
-                            selfDeafen: state.options.selfDeafen,
-                            volume: lavaPlayer.volume || state.options.volume,
-                            node: nodeId,
-                        };
-                        this.emit(ManagerEventTypes.Debug, `[MANAGER] Recreating player: ${state.guildId} from saved file: ${JSON.stringify(state.options)}`);
-                        const player = this.create(playerOptions);
-                        if (state.voiceState?.event?.token && state.voiceState?.event?.endpoint && state.voiceState?.sessionId && state.options.voiceChannelId) {
-                            await player.node.rest.updatePlayer({
-                                guildId: state.options.guildId,
-                                data: { voice: { token: state.voiceState.event.token, endpoint: state.voiceState.event.endpoint, sessionId: state.voiceState.sessionId, channelId: state.options.voiceChannelId } },
-                            });
-                        }
-                        player.connect();
-                        const tracks = [];
-                        const currentTrack = state.queue.current;
-                        const queueTracks = state.queue.tracks;
-                        if (lavaPlayer) {
-                            if (lavaPlayer.track) {
-                                tracks.push(...queueTracks);
-                                if (currentTrack && currentTrack.uri === lavaPlayer.track.info.uri) {
-                                    player.queue.current = Utils_1.TrackUtils.build(lavaPlayer.track, currentTrack.requester);
-                                }
-                            }
-                            else {
-                                if (!currentTrack) {
-                                    const payload = {
-                                        reason: Utils_1.TrackEndReasonTypes.Finished,
-                                    };
-                                    await node.queueEnd(player, currentTrack, payload);
-                                }
-                                else {
-                                    tracks.push(currentTrack, ...queueTracks);
-                                }
-                            }
-                        }
-                        else {
-                            if (!currentTrack) {
-                                const payload = {
-                                    reason: Utils_1.TrackEndReasonTypes.Finished,
-                                };
-                                await node.queueEnd(player, currentTrack, payload);
-                            }
-                            else {
-                                tracks.push(currentTrack, ...queueTracks);
-                            }
-                        }
-                        if (tracks.length > 0) {
-                            player.queue.add(tracks);
-                        }
-                        if (state.queue.previous.length > 0) {
-                            player.queue.previous = state.queue.previous;
-                        }
-                        else {
-                            player.queue.previous = [];
-                        }
-                        if (state.paused) {
-                            await player.pause(true);
-                        }
-                        else {
-                            player.paused = false;
-                        }
-                        if (state.trackRepeat)
-                            player.setTrackRepeat(true);
-                        if (state.queueRepeat)
-                            player.setQueueRepeat(true);
-                        if (state.dynamicRepeat) {
-                            const dynamicRepeatInterval = state.dynamicRepeatIntervalMs ?? state.dynamicLoopInterval?._idleTimeout;
-                            if (dynamicRepeatInterval && player.queue.size > 1) {
-                                player.setDynamicRepeat(true, dynamicRepeatInterval);
-                            }
-                        }
-                        if (state.isAutoplay && state.data?.clientUser) {
-                            Object.setPrototypeOf(state.data.clientUser, { constructor: { name: "User" } });
-                            player.setAutoplay(true, state.data.clientUser, state.autoplayTries);
-                        }
-                        if (state.data) {
-                            for (const [name, value] of Object.entries(state.data)) {
-                                player.set(name, value);
-                            }
-                        }
-                        if (state.filters?.filterStatus && player.filters) {
-                            const filterActions = {
-                                bassboost: () => player.filters.bassBoost(state.filters.bassBoostlevel),
-                                distort: (enabled) => player.filters.distort(enabled),
-                                setDistortion: () => player.filters.setDistortion(state.filters.distortion),
-                                eightD: (enabled) => player.filters.eightD(enabled),
-                                setKaraoke: () => player.filters.setKaraoke(state.filters.karaoke),
-                                nightcore: (enabled) => player.filters.nightcore(enabled),
-                                slowmo: (enabled) => player.filters.slowmo(enabled),
-                                soft: (enabled) => player.filters.soft(enabled),
-                                trebleBass: (enabled) => player.filters.trebleBass(enabled),
-                                setTimescale: () => player.filters.setTimescale(state.filters.timescale),
-                                tv: (enabled) => player.filters.tv(enabled),
-                                vibrato: () => player.filters.setVibrato(state.filters.vibrato),
-                                setTremolo: () => player.filters.setTremolo(state.filters.tremoloOptions),
-                                setChannelMix: () => player.filters.setChannelMix(state.filters.channelMix),
-                                setLowPass: () => player.filters.setLowPass(state.filters.lowPass),
-                                setReverb: () => player.filters.setReverb(state.filters.reverb),
-                                vaporwave: (enabled) => player.filters.vaporwave(enabled),
-                                pop: (enabled) => player.filters.pop(enabled),
-                                party: (enabled) => player.filters.party(enabled),
-                                earrape: (enabled) => player.filters.earrape(enabled),
-                                electronic: (enabled) => player.filters.electronic(enabled),
-                                radio: (enabled) => player.filters.radio(enabled),
-                                setRotation: () => player.filters.setRotation(state.filters.rotation),
-                                tremolo: (enabled) => player.filters.tremolo(enabled),
-                                china: (enabled) => player.filters.china(enabled),
-                                chipmunk: (enabled) => player.filters.chipmunk(enabled),
-                                darthvader: (enabled) => player.filters.darthvader(enabled),
-                                daycore: (enabled) => player.filters.daycore(enabled),
-                                doubletime: (enabled) => player.filters.doubletime(enabled),
-                                demon: (enabled) => player.filters.demon(enabled),
-                            };
-                            // Iterate through filterStatus and apply the enabled filters
-                            for (const [filter, isEnabled] of Object.entries(state.filters.filterStatus)) {
-                                if (isEnabled && filterActions[filter]) {
-                                    await filterActions[filter](true);
-                                }
-                            }
-                        }
-                    }
-                }
+        const legacy = path_1.default.join(dataRoot, "dist", "sessionData", "players");
+        for (const remote of players) {
+            const guildId = remote?.guildId;
+            if (typeof guildId !== "string" || !/^\d+$/.test(guildId) || this.players.has(guildId) || this.shutdownTask) continue;
+            try {
+                let file = path_1.default.join(directory, guildId + ".json");
+                let saved;
+                try { saved = await promises_1.default.readFile(file, "utf8"); }
                 catch (error) {
-                    this.emit(ManagerEventTypes.Debug, `[MANAGER] Error processing file ${filePath}: ${error}`);
-                    continue; // Skip to the next file if there's an error
+                    if (error.code !== "ENOENT" || this.options.sessionDataPath || !resumed) throw error;
+                    file = path_1.default.join(legacy, guildId + ".json");
+                    saved = await promises_1.default.readFile(file, "utf8");
                 }
-            }
-            // Delete all files inside playerStatesDir where nodeId matches
-            for (const file of playerFiles) {
-                const filePath = path_1.default.join(playerStatesDir, file);
-                try {
-                    await promises_1.default.access(filePath); // Check if the file exists
-                    const data = await promises_1.default.readFile(filePath, "utf-8");
-                    const state = JSON.parse(data);
-                    if (state && typeof state === "object" && state.node.options.identifier === nodeId) {
-                        await promises_1.default.unlink(filePath); // Delete the file asynchronously
-                        this.emit(ManagerEventTypes.Debug, `[MANAGER] Deleted player state file: ${filePath}`);
-                    }
+                const state = JSON.parse(saved);
+                if (state.guildId !== guildId || (state.nodeId ?? state.node?.options?.identifier) !== nodeId) continue;
+                if (Number.isFinite(state.savedAt) && Date.now() - state.savedAt > node.options.sessionTimeoutMs) {
+                    await promises_1.default.rm(file, { force: true });
+                    continue;
                 }
-                catch (error) {
-                    this.emit(ManagerEventTypes.Debug, `[MANAGER] Error deleting file ${filePath}: ${error}`);
-                    continue; // Skip to the next file if there's an error
+                if (!resumed && !Number.isFinite(state.savedAt)) continue;
+                const voiceChannelId = remote.voice?.channelId ?? state.voiceChannelId ?? state.options?.voiceChannelId;
+                const player = this.create({ ...state.options, guildId, node: nodeId, voiceChannelId, volume: remote.volume ?? state.options?.volume });
+                if (resumed) player.state = Utils_1.StateTypes.Connected;
+                player.position = (resumed ? remote.state?.position : state.position) ?? 0;
+                player.paused = !!(resumed ? remote.paused : state.paused);
+                player.playing = !!(resumed ? remote.track && !player.paused : state.playing);
+                player.playbackId = remote.track?.userData?.pulsifyPlaybackId;
+                const voice = remote.voice;
+                if (voice?.token && voice.endpoint && voice.sessionId) {
+                    const event = { token: voice.token, endpoint: voice.endpoint };
+                    Object.assign(player.voiceState, { event, channelId: voiceChannelId, sessionId: voice.sessionId,
+                        sent: { ...event, event, channelId: voiceChannelId, sessionId: voice.sessionId, node, nodeSession: node.sessionId } });
                 }
+                const savedTrack = state.queue?.current;
+                if (remote.track) {
+                    const requester = savedTrack?.track === remote.track.encoded ? savedTrack.requester : undefined;
+                    player.queue.current = Utils_1.TrackUtils.build(remote.track, requester, this.options.trackPartial ?? null);
+                } else if (Utils_1.TrackUtils.validate(savedTrack)) {
+                    player.queue.current = savedTrack;
+                }
+                const upcoming = state.queue?.tracks;
+                if (Array.isArray(upcoming)) player.queue.add(upcoming.filter(track => Utils_1.TrackUtils.validate(track)).slice(0, this.options.maxQueueSize - player.queue.totalSize));
+                if (Array.isArray(state.queue?.previous)) {
+                    player.queue.previous = state.queue.previous.filter(track => Utils_1.TrackUtils.validate(track)).slice(-this.options.maxPreviousTracks);
+                }
+                if (state.trackRepeat) player.setTrackRepeat(true);
+                else if (state.queueRepeat) player.setQueueRepeat(true);
+                else if (state.dynamicRepeat && state.dynamicRepeatIntervalMs && player.queue.size > 1) player.setDynamicRepeat(true, state.dynamicRepeatIntervalMs);
+                if (state.isAutoplay && state.data?.clientUser?.id) player.setAutoplay(true, state.data.clientUser, state.autoplayTries);
+                if (state.filters) player.filters.restore(state.filters);
+                if (file.startsWith(legacy + path_1.default.sep)) {
+                    await this.savePlayerState(guildId);
+                    await promises_1.default.unlink(file);
+                }
+            } catch (error) {
+                if (error.code !== "ENOENT") node.error(new Error("A saved Lavalink player could not be restored."));
             }
         }
-        catch (error) {
-            this.emit(ManagerEventTypes.Debug, `[MANAGER] Error loading player states: ${error}`);
-        }
-        this.emit(ManagerEventTypes.Debug, "[MANAGER] Finished loading saved players.");
     }
+
     /**
      * Returns the node to use based on the configured `useNode` and `enablePriorityMode` options.
      * If `enablePriorityMode` is true, the node is chosen based on priority, otherwise it is chosen based on the `useNode` option.
@@ -640,8 +508,8 @@ class Manager extends events_1.EventEmitter {
             .sort((a, b) => {
             const aReservations = this.failoverReservations.get(a.options.identifier) ?? 0;
             const bReservations = this.failoverReservations.get(b.options.identifier) ?? 0;
-            const aPlayers = (a.stats?.players ?? 0) + aReservations;
-            const bPlayers = (b.stats?.players ?? 0) + bReservations;
+            const aPlayers = Math.max(a.stats?.players ?? 0, a.localPlayers ?? 0) + aReservations;
+            const bPlayers = Math.max(b.stats?.players ?? 0, b.localPlayers ?? 0) + bReservations;
             if (aPlayers !== bPlayers)
                 return aPlayers - bPlayers;
             const aload = a.stats?.cpu?.cores ? (a.stats.cpu.lavalinkLoad / a.stats.cpu.cores) : 0;
@@ -670,305 +538,85 @@ class Manager extends events_1.EventEmitter {
         else
             this.failoverReservations.delete(id);
     }
-    /**
-     * Handles the shutdown of the process by saving all active players' states and optionally cleaning up inactive players.
-     * This function is called when the process is about to exit.
-     * It iterates through all players and calls {@link savePlayerState} to save their states.
-     * Optionally, it also calls {@link cleanupInactivePlayers} to remove any stale player state files.
-     * After saving and cleaning up, it exits the process.
-     */
-    async handleShutdown() {
-        console.warn("\x1b[31m%s\x1b[0m", "PULSIFY WARNING: Shutting down! Please wait, saving active players...");
-        try {
-            const savePromises = Array.from(this.players.keys()).map(async (guildId) => {
-                try {
-                    await this.savePlayerState(guildId);
-                }
-                catch (error) {
-                    console.error(`Error saving player state for guild ${guildId}:`, error);
-                }
-            });
-            await Promise.allSettled(savePromises);
-            await this.cleanupInactivePlayers();
-            setTimeout(() => {
-                console.warn("\x1b[32m%s\x1b[0m", "PULSIFY INFO: Shutting down complete, exiting...");
-                process.exit(0);
-            }, 500);
-        }
-        catch (error) {
-            console.error("Unexpected error during shutdown:", error);
-            process.exit(1);
-        }
-        finally {
-            Manager.activeManagers.delete(this);
-        }
-    }
-    /**
-     * Balances brackets in a given string by ensuring all opened brackets are closed correctly.
-     * @param str - The input string that may contain unbalanced brackets.
-     * @returns A new string with balanced brackets.
-     */
-    balanceBrackets(str) {
-        const stack = [];
-        const openBrackets = "([{";
-        const closeBrackets = ")]}";
-        let result = "";
-        // Iterate over each character in the string
-        for (const char of str) {
-            // If the character is an open bracket, push it onto the stack and add to result
-            if (openBrackets.includes(char)) {
-                stack.push(char);
-                result += char;
-            }
-            // If the character is a close bracket, check if it balances with the last open bracket
-            else if (closeBrackets.includes(char)) {
-                if (stack.length > 0 && openBrackets.indexOf(stack[stack.length - 1]) === closeBrackets.indexOf(char)) {
-                    stack.pop();
-                    result += char;
-                }
-            }
-            // If it's neither, just add the character to the result
-            else {
-                result += char;
-            }
-        }
-        // Close any remaining open brackets by adding the corresponding close brackets
-        while (stack.length > 0) {
-            const lastOpen = stack.pop();
-            result += closeBrackets[openBrackets.indexOf(lastOpen)];
-        }
-        return result;
-    }
-    /**
-     * Escapes a string by replacing special regex characters with their escaped counterparts.
-     * @param string - The string to escape.
-     * @returns The escaped string.
-     */
-    escapeRegExp(string) {
-        // Replace special regex characters with their escaped counterparts
-        return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    }
-    /**
-     * Checks if the given data is a voice update.
-     * @param data The data to check.
-     * @returns Whether the data is a voice update.
-     */
-    isVoiceUpdate(data) {
-        return "t" in data && ["VOICE_STATE_UPDATE", "VOICE_SERVER_UPDATE"].includes(data.t);
-    }
-    /**
-     * Determines if the provided update is a valid voice update.
-     * A valid update must contain either a token or a session_id.
-     *
-     * @param update - The voice update data to validate, which can be a VoicePacket, VoiceServer, or VoiceState.
-     * @returns {boolean} - True if the update is valid, otherwise false.
-     */
-    isValidUpdate(update) {
-        return update && ("token" in update || "session_id" in update);
-    }
-    /**
-     * Handles a voice server update by updating the player's voice state and sending the voice state to the Lavalink node.
-     * @param player The player for which the voice state is being updated.
-     * @param update The voice server data received from Discord.
-     * @returns A promise that resolves when the voice state update is handled.
-     * @emits {debug} - Emits a debug message indicating the voice state is being updated.
-     */
-    async handleVoiceServerUpdate(player, update) {
-        player.voiceState.event = update;
-
-        const {
-            sessionId,
-            event: { token, endpoint },
-        } = player.voiceState;
-
-        const channelId = player.voiceChannelId;
-
-        if (!token || !endpoint || !sessionId || !channelId) return;
-        const voicePayload = { token, endpoint, sessionId, channelId };
-        if (!this.shouldSendVoiceUpdate(player.guildId, voicePayload)) {
-            this.emit(ManagerEventTypes.Debug, `[MANAGER] Skipping duplicate voice update for guild ${player.guildId}`);
-            return;
-        }
-
-        await player.node.rest.updatePlayer({
-            guildId: player.guildId,
-            data: {
-                voice: voicePayload,
-            },
-        });
-    }
-    /**
-     * Handles a voice state update by updating the player's voice channel and session ID if provided, or by disconnecting and destroying the player if the channel ID is null.
-     * @param player The player for which the voice state is being updated.
-     * @param update The voice state data received from Discord.
-     * @emits {playerMove} - Emits a player move event if the channel ID is provided and the player is currently connected to a different voice channel.
-     * @emits {playerDisconnect} - Emits a player disconnect event if the channel ID is null.
-     */
-    async handleVoiceStateUpdate(player, update) {
-        if (update.channel_id) {
-            if (player.voiceChannelId !== update.channel_id) {
-                this.emit(ManagerEventTypes.PlayerMove, player, player.voiceChannelId, update.channel_id);
-            }
-            player.voiceState.sessionId = update.session_id;
-            player.voiceChannelId = update.channel_id ?? null;
-
-            if (player.voiceState.event) {
-                const { token, endpoint } = player.voiceState.event;
-                const { sessionId } = player.voiceState;
-
-                if (token && endpoint && sessionId && player.voiceChannelId) {
-                    const voicePayload = {
-                        token,
-                        endpoint,
-                        sessionId,
-                        channelId: player.voiceChannelId,
-                    };
-                    if (!this.shouldSendVoiceUpdate(player.guildId, voicePayload)) {
-                        this.emit(ManagerEventTypes.Debug, `[MANAGER] Skipping duplicate voice update for guild ${player.guildId}`);
-                        return;
+    handleShutdown() {
+        this.shutdownTask ??= Promise.resolve().then(async () => {
+            clearInterval(this.inactivityTimer);
+            this.inactivityTimer = undefined;
+            const failures = [];
+            const players = this.players.values();
+            const worker = async () => {
+                for (const player of players) {
+                    const resume = player.node.options.enableSessionResumeOption;
+                    try {
+                        if (resume) await this.savePlayerState(player.guildId);
+                    } catch (error) {
+                        failures.push(error);
+                    } finally {
+                        try { await player.destroy(!resume, resume); }
+                        catch (error) { failures.push(error); }
                     }
-                    await player.node.rest.updatePlayer({
-                        guildId: player.guildId,
-                        data: {
-                            voice: voicePayload,
-                        },
-                    });
                 }
-            }
-            return;
-        }
-        this.emit(ManagerEventTypes.PlayerDisconnect, player, player.voiceChannelId);
-        player.voiceChannelId = null;
-        player.voiceState = Object.assign({});
-        await player.destroy();
-        return;
+            };
+            await Promise.all(Array.from({ length: Math.min(this.players.size, 8) }, worker));
+            const results = await Promise.allSettled([...this.nodes.values()].map(node => node.destroy()));
+            for (const result of results) if (result.status === "rejected") failures.push(result.reason);
+            this.trackCache.clear();
+            this.failoverReservations.clear();
+            if (failures.length) throw new AggregateError(failures, "Pulsify could not finish shutdown cleanly.");
+        });
+        return this.shutdownTask;
     }
-    shouldSendVoiceUpdate(guildId, payload) {
-        const now = Date.now();
-        for (const [cachedGuildId, cacheEntry] of this.voiceUpdateDedupCache) {
-            if ((now - cacheEntry.timestamp) > this.voiceUpdateDedupWindowMs) {
-                this.voiceUpdateDedupCache.delete(cachedGuildId);
-            }
-        }
-        const signature = `${payload.token}|${payload.endpoint}|${payload.sessionId}|${payload.channelId}`;
-        const previous = this.voiceUpdateDedupCache.get(guildId);
-        if (previous && previous.signature === signature && (now - previous.timestamp) <= this.voiceUpdateDedupWindowMs) {
-            return false;
-        }
-        this.voiceUpdateDedupCache.set(guildId, { signature, timestamp: now });
-        return true;
-    }
-    /**
-     * Gets each player's JSON file
-     * @param {string} guildId - The guild ID
-     * @returns {string} The path to the player's JSON file
-     */
+
     async getPlayerFilePath(guildId) {
-        const configDir = path_1.default.join(require("../utils/sessionData").dataRoot, "dist", "sessionData", "players");
-        try {
-            await promises_1.default.mkdir(configDir, { recursive: true });
-            return path_1.default.join(configDir, `${guildId}.json`);
-        }
-        catch (err) {
-            console.error("Error ensuring player data directory exists:", err);
-            throw new Error(`Failed to resolve player file path for guild ${guildId}`);
-        }
+        if (typeof guildId !== "string" || !/^\d+$/.test(guildId)) throw new TypeError("Invalid Discord guild ID.");
+        const directory = path_1.default.join(scopePath(this), "players");
+        await promises_1.default.mkdir(directory, { recursive: true, mode: 0o700 });
+        return path_1.default.join(directory, guildId + ".json");
     }
-    /**
-     * Serializes a Player instance to avoid circular references.
-     * @param player The Player instance to serialize
-     * @returns The serialized Player instance
-     */
+
+    async removePlayerState(guildId) {
+        if (typeof guildId !== "string" || !/^\d+$/.test(guildId)) throw new TypeError("Invalid Discord guild ID.");
+        if (!this.initiated) return;
+        const file = path_1.default.join(scopePath(this), "players", guildId + ".json");
+        await promises_1.default.rm(file, { force: true });
+    }
+
     serializePlayer(player) {
-        const seen = new WeakSet();
-        /**
-         * Recursively serializes an object, avoiding circular references.
-         * @param obj The object to serialize
-         * @returns The serialized object
-         */
-        const serialize = (obj) => {
-            if (obj && typeof obj === "object") {
-                if (seen.has(obj))
-                    return;
-                seen.add(obj);
-            }
-            return obj;
+        const safeUri = value => {
+            if (typeof value !== "string") return null;
+            try {
+                const url = new URL(value);
+                if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) return null;
+                return url.href;
+            } catch { return null; }
         };
-        return JSON.parse(JSON.stringify(player, (key, value) => {
-            if (key === "manager") {
-                return null;
-            }
-            if (key === "filters") {
-                return {
-                    distortion: value.distortion ?? null,
-                    equalizer: value.equalizer ?? [],
-                    karaoke: value.karaoke ?? null,
-                    rotation: value.rotation ?? null,
-                    timescale: value.timescale ?? null,
-                    vibrato: value.vibrato ?? null,
-                    tremoloOptions: value.tremoloOptions ?? null,
-                    channelMix: value.channelMix ?? null,
-                    lowPass: value.lowPass ?? null,
-                    reverb: value.reverb ?? null,
-                    volume: value.volume ?? 1.0,
-                    bassBoostlevel: value.bassBoostlevel ?? null,
-                    filterStatus: { ...value.filtersStatus },
-                };
-            }
-            if (key === "queue") {
-                return {
-                    current: value.current || null,
-                    tracks: [...value],
-                    previous: [...value.previous],
-                };
-            }
-            if (key === "data") {
-                return {
-                    clientUser: value.Internal_BotUser ?? null,
-                };
-            }
-            return serialize(value);
-        }));
+        const serializeTrack = track => track && {
+            track: track.track, title: track.title, identifier: track.identifier,
+            author: track.author, duration: track.duration, sourceName: track.sourceName,
+            isSeekable: track.isSeekable, isStream: track.isStream, isrc: track.isrc,
+            uri: safeUri(track.uri), artworkUrl: safeUri(track.artworkUrl),
+            requester: typeof track.requester?.id === "string" ? { id: track.requester.id } : undefined,
+        };
+        const bot = player.get("Internal_BotUser");
+        return {
+            savedAt: Date.now(), playing: player.playing, paused: player.paused, position: player.position, guildId: player.guildId, nodeId: player.node.options.identifier, voiceChannelId: player.voiceChannelId,
+            options: {
+                textChannelId: player.textChannelId, voiceChannelId: player.voiceChannelId,
+                selfDeafen: player.options.selfDeafen, selfMute: player.options.selfMute, volume: player.volume,
+            },
+            queue: {
+                current: serializeTrack(player.queue.current),
+                tracks: Array.from(player.queue, serializeTrack),
+                previous: player.queue.previous.map(serializeTrack).filter(Boolean),
+            },
+            filters: player.filters?.snapshot(),
+            data: { clientUser: typeof bot?.id === "string" ? { id: bot.id } : undefined },
+            trackRepeat: player.trackRepeat, queueRepeat: player.queueRepeat,
+            dynamicRepeat: player.dynamicRepeat, dynamicRepeatIntervalMs: player.dynamicRepeatIntervalMs,
+            isAutoplay: player.isAutoplay, autoplayTries: player.autoplayTries,
+        };
     }
-    /**
-     * Checks for players that are no longer active and deletes their saved state files.
-     * This is done to prevent stale state files from accumulating on the file system.
-     */
-    async cleanupInactivePlayers() {
-        const playerStatesDir = path_1.default.join(require("../utils/sessionData").dataRoot, "dist", "sessionData", "players");
-        try {
-            // Check if the directory exists, and create it if it doesn't
-            await promises_1.default.access(playerStatesDir).catch(async () => {
-                await promises_1.default.mkdir(playerStatesDir, { recursive: true });
-                this.emit(ManagerEventTypes.Debug, `[MANAGER] Created directory: ${playerStatesDir}`);
-            });
-            // Get the list of player state files
-            const playerFiles = await promises_1.default.readdir(playerStatesDir);
-            // Get the set of active guild IDs from the manager's player collection
-            const activeGuildIds = new Set(this.players.keys());
-            // Iterate over the player state files
-            for (const file of playerFiles) {
-                // Get the guild ID from the file name
-                const guildId = path_1.default.basename(file, ".json");
-                // If the guild ID is not in the set of active guild IDs, delete the file
-                if (!activeGuildIds.has(guildId)) {
-                    const filePath = path_1.default.join(playerStatesDir, file);
-                    await promises_1.default.unlink(filePath); // Delete the file asynchronously
-                    this.voiceUpdateDedupCache.delete(guildId);
-                    this.emit(ManagerEventTypes.Debug, `[MANAGER] Deleting inactive player: ${guildId}`);
-                }
-            }
-        }
-        catch (error) {
-            this.emit(ManagerEventTypes.Debug, `[MANAGER] Error cleaning up inactive players: ${error}`);
-        }
-    }
-    /**
-     * Returns the nodes that has the least load.
-     * The load is calculated by dividing the lavalink load by the number of cores.
-     * The result is multiplied by 100 to get a percentage.
-     * @returns {Collection<string, Node>}
-     */
+
     get leastLoadNode() {
         return this.nodes
             .filter((node) => this.isHealthyNode(node))
@@ -988,7 +636,7 @@ class Manager extends events_1.EventEmitter {
     get leastPlayersNode() {
         return this.nodes
             .filter((node) => this.isHealthyNode(node))
-            .sort((a, b) => a.stats.players - b.stats.players); // Sort by the number of players
+            .sort((a, b) => Math.max(a.stats.players, a.localPlayers ?? 0) - Math.max(b.stats.players, b.localPlayers ?? 0)); // Sort by the number of players
     }
     /**
      * Returns a node based on priority.
@@ -1066,18 +714,23 @@ var UseNodeOptions;
 var SearchPlatform;
 (function (SearchPlatform) {
     SearchPlatform["AppleMusic"] = "amsearch";
-    SearchPlatform["AmazonMusic"] = "amzsearch";
     SearchPlatform["AudioMack"] = "admsearch";
     SearchPlatform["Bandcamp"] = "bcsearch";
     SearchPlatform["Deezer"] = "dzsearch";
-    SearchPlatform["Gaana"] = "gasearch";
+    SearchPlatform["Gaana"] = "gnsearch";
     SearchPlatform["Jiosaavn"] = "jssearch";
     SearchPlatform["SoundCloud"] = "scsearch";
     SearchPlatform["Spotify"] = "spsearch";
-    SearchPlatform["Qobuz"] = "qbsearch";
     SearchPlatform["Tidal"] = "tdsearch";
     SearchPlatform["VKMusic"] = "vksearch";
+    SearchPlatform["YouTube"] = "ytsearch";
+    SearchPlatform["YouTubeMusic"] = "ytmsearch";
 })(SearchPlatform || (exports.SearchPlatform = SearchPlatform = {}));
+const searchPlatformAliases = new Map(Object.entries(SearchPlatform).map(([name, prefix]) => [name.toLowerCase(), prefix]));
+searchPlatformAliases.set("gasearch", SearchPlatform.Gaana);
+searchPlatformAliases.set("ytmusic", SearchPlatform.YouTubeMusic);
+searchPlatformAliases.set("youtube-music", SearchPlatform.YouTubeMusic);
+searchPlatformAliases.set("youtube music", SearchPlatform.YouTubeMusic);
 var AutoPlayPlatform;
 (function (AutoPlayPlatform) {
     AutoPlayPlatform["Spotify"] = "spotify";

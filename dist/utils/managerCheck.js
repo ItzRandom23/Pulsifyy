@@ -10,14 +10,14 @@ const Manager_1 = require("../structures/Manager");
 function managerCheck(options) {
     if (!options)
         throw new TypeError("ManagerOptions must not be empty.");
-    const { playNextOnEnd, clientName, defaultSearchPlatform, autoPlaySearchPlatforms, nodes, enabledPlugins, send, trackPartial, enablePriorityMode, useNode, lastFmApiKey, maxPreviousTracks, } = options;
+    const { playNextOnEnd, clientName, defaultSearchPlatform, autoPlaySearchPlatforms, nodes, enabledPlugins, send, trackPartial, enablePriorityMode, useNode, lastFmApiKey, } = options;
     // Validate playNextOnEnd option
     if (typeof playNextOnEnd !== "undefined" && typeof playNextOnEnd !== "boolean") {
         throw new TypeError('Manager option "playNextOnEnd" must be a boolean.');
     }
     // Validate clientName option
     if (typeof clientName !== "undefined") {
-        if (typeof clientName !== "string" || clientName.trim().length === 0) {
+        if (typeof clientName !== "string" || clientName.trim().length === 0 || /[^\x20-\x7e]/.test(clientName)) {
             throw new TypeError('Manager option "clientName" must be a non-empty string.');
         }
     }
@@ -64,7 +64,7 @@ function managerCheck(options) {
     // Validate node priority if enablePriorityMode is enabled
     if (enablePriorityMode && Array.isArray(nodes)) {
         for (let index = 0; index < nodes.length; index++) {
-            if (typeof nodes[index].nodePriority !== "number" || isNaN(nodes[index].nodePriority)) {
+            if (!Number.isFinite(nodes[index]?.nodePriority)) {
                 throw new TypeError(`Missing or invalid node option "nodePriority" at position ${index}`);
             }
         }
@@ -82,13 +82,17 @@ function managerCheck(options) {
     if (typeof lastFmApiKey !== "undefined" && (typeof lastFmApiKey !== "string" || lastFmApiKey.trim().length === 0)) {
         throw new TypeError('Manager option "lastFmApiKey" must be a non-empty string.');
     }
-    // Validate maxPreviousTracks option
-    if (typeof maxPreviousTracks !== "undefined") {
-        if (typeof maxPreviousTracks !== "number" || isNaN(maxPreviousTracks)) {
-            throw new TypeError('Manager option "maxPreviousTracks" must be a number.');
-        }
-        if (maxPreviousTracks <= 0) {
-            throw new TypeError('Manager option "maxPreviousTracks" must be a positive number.');
-        }
+    for (const [key, minimum, maximum] of [
+        ["maxPreviousTracks", 1, 10000], ["maxQueueSize", 1, 100000],
+        ["playerInactivityTimeoutMs", 0, 2147483647], ["trackCacheTtlMs", 0, 2147483647],
+        ["trackCacheMaxEntries", 0, 10000], ["trackRetryAttempts", 0, 10],
+    ]) {
+        const value = options[key];
+        if (value !== undefined && (!Number.isSafeInteger(value) || value < minimum || value > maximum)) throw new RangeError("Invalid manager option: " + key);
     }
+    if (options.sessionDataPath !== undefined && (typeof options.sessionDataPath !== "string" || !options.sessionDataPath.trim())) {
+        throw new TypeError("sessionDataPath must be a non-empty path.");
+    }
+    if (options.trackErrorRecovery !== undefined && typeof options.trackErrorRecovery !== "function") throw new TypeError("trackErrorRecovery must be a function.");
+    if (options.logLevel !== undefined && !["error", "warn", "info", "debug"].includes(options.logLevel)) throw new TypeError("Invalid logLevel.");
 }

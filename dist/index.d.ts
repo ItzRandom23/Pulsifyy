@@ -1,7 +1,7 @@
 import { User, ClientUser, Message } from 'discord.js';
 import WebSocket from 'ws';
 import { Collection } from '@discordjs/collection';
-import { EventEmitter } from 'events';
+import { EventEmitter } from 'node:events';
 
 /** Represents an equalizer band. */
 interface Band {
@@ -18,7 +18,6 @@ declare class Rest {
     /** The ID of the current session. */
     private sessionId;
     /** The password for the Node. */
-    private readonly password;
     /** The URL of the Node. */
     private readonly url;
     /** The Manager instance. */
@@ -101,9 +100,11 @@ declare class Rest {
 }
 interface playOptions {
     guildId: string;
+    noReplace?: boolean;
     data: {
         /** The base64 encoded track. */
-        encodedTrack?: string;
+        encodedTrack?: string | null;
+        track?: { encoded?: string | null; identifier?: string; userData?: Record<string, unknown> };
         /** The track ID. */
         identifier?: string;
         /** The track time to start at. */
@@ -154,14 +155,14 @@ declare class Node {
     readonly rest: Rest;
     /** Actual Lavalink information of the node. */
     info: LavalinkInfo | null;
-    private static _manager;
+    private static managerRef;
     private reconnectTimeout?;
     private reconnectAttempts;
     /**
      * Creates an instance of Node.
      * @param options
      */
-    constructor(options: NodeOptions);
+    constructor(options: NodeOptions, manager?: Manager);
     /** Returns if connected to the Node. */
     get connected(): boolean;
     /** Returns the address for this node. */
@@ -299,55 +300,6 @@ declare class Node {
      */
     protected trackEnd(player: Player, track: Track, payload: TrackEndEvent): Promise<void>;
     /**
-     * Handles autoplay logic for a player.
-     * This method is responsible for selecting an appropriate method of autoplay
-     * and executing it. If autoplay is not enabled or all attempts have failed,
-     * it will return false.
-     * @param {Player} player - The player to handle autoplay for.
-     * @param {number} attempt - The current attempt number of the autoplay.
-     * @returns {Promise<boolean>} A promise that resolves to a boolean indicating if autoplay was successful.
-     * @private
-     */
-    private handleAutoplay;
-    /**
-     * Handles the scenario when a track fails to play or load.
-     * Shifts the queue to the next track and emits a track end event.
-     * If there is no next track, handles the queue end scenario.
-     * If autoplay is enabled, plays the next track.
-     *
-     * @param {Player} player - The player instance associated with the track.
-     * @param {Track} track - The track that failed.
-     * @param {TrackEndEvent} payload - The event payload containing details about the track end.
-     * @returns {Promise<void>} A promise that resolves when the track failure has been processed.
-     * @private
-     */
-    private handleFailedTrack;
-    /**
-     * Handles the scenario when a track is repeated.
-     * Shifts the queue to the next track and emits a track end event.
-     * If there is no next track, handles the queue end scenario.
-     * If autoplay is enabled, plays the next track.
-     *
-     * @param {Player} player - The player instance associated with the track.
-     * @param {Track} track - The track that is repeated.
-     * @param {TrackEndEvent} payload - The event payload containing details about the track end.
-     * @returns {Promise<void>} A promise that resolves when the repeated track has been processed.
-     * @private
-     */
-    private handleRepeatedTrack;
-    /**
-     * Plays the next track in the queue.
-     * Updates the queue by shifting the current track to the previous track
-     * and plays the next track if autoplay is enabled.
-     *
-     * @param {Player} player - The player associated with the track.
-     * @param {Track} track - The track that has ended.
-     * @param {TrackEndEvent} payload - The event payload containing additional data about the track end event.
-     * @returns {void}
-     * @private
-     */
-    private playNextTrack;
-    /**
      * Handles the event when a queue ends.
      * If autoplay is enabled, attempts to play the next track in the queue using the autoplay logic.
      * If all attempts fail, resets the player state and emits the `queueEnd` event.
@@ -462,13 +414,6 @@ declare class Node {
      * @throws {RangeError} If the sponsorblock-plugin is not available in the Lavalink node.
      */
     deleteSponsorBlock(player: Player): Promise<void>;
-    /**
-     * Creates a README.md or README.txt file in the session data directory
-     * if it doesn't already exist. This file is used to store player data
-     * for autoresume and other features.
-     * @private
-     */
-    private createReadmeFile;
 }
 interface NodeOptions {
     /** The host for the node. */
@@ -476,7 +421,7 @@ interface NodeOptions {
     /** The port for the node. */
     port?: number;
     /** The password for the node. */
-    password?: string;
+    password: string;
     /** Whether the host uses SSL. */
     useSSL?: boolean;
     /** Alias for useSSL. */
@@ -656,7 +601,6 @@ declare class Queue extends Array<Track> {
 declare abstract class TrackUtils {
     static trackPartial: TrackPartial[] | null;
     private static manager;
-    private static axiosOptions;
     /**
      * Initializes the TrackUtils class with the given manager.
      * @param manager The manager instance to use.
@@ -675,14 +619,15 @@ declare abstract class TrackUtils {
      * @param trackOrTracks The Track or array of Tracks to check.
      * @returns {boolean} Whether the provided argument is a valid Track.
      */
-    static validate(trackOrTracks: unknown): boolean;
+    static validate(track: unknown[]): track is Track[];
+    static validate(track: unknown): track is Track;
     /**
      * Builds a Track from the raw data from Lavalink and a optional requester.
      * @param data The raw data from Lavalink to build the Track from.
      * @param requester The user who requested the track, if any.
      * @returns The built Track.
      */
-    static build<T = User | ClientUser>(data: TrackData, requester?: T): Track;
+    static build<T = User | ClientUser>(data: TrackData, requester?: T, partial?: TrackPartial[] | null): Track;
 }
 declare abstract class AutoPlayUtils {
     private static manager;
@@ -697,21 +642,21 @@ declare abstract class AutoPlayUtils {
      * @param track The track to get recommended tracks for.
      * @returns An array of recommended tracks.
      */
-    static getRecommendedTracks(track: Track): Promise<Track[]>;
+    static getRecommendedTracks(track: Track, manager?: Manager, node?: Node): Promise<Track[]>;
     /**
      * Gets recommended tracks from Last.fm for the given track.
      * @param track The track to get recommended tracks for.
      * @param apiKey The API key for Last.fm.
      * @returns An array of recommended tracks.
      */
-    static getRecommendedTracksFromLastFm(track: Track, apiKey: string): Promise<Track[]>;
+    static getRecommendedTracksFromLastFm(track: Track, apiKey: string, manager?: Manager, node?: Node): Promise<Track[]>;
     /**
      * Gets recommended tracks from the given source.
      * @param track The track to get recommended tracks for.
      * @param platform The source to get recommended tracks from.
      * @returns An array of recommended tracks.
      */
-    static getRecommendedTracksFromSource(track: Track, platform: string): Promise<Track[]>;
+    static getRecommendedTracksFromSource(track: Track, platform: string, manager?: Manager, node?: Node): Promise<Track[]>;
 }
 /** Gets or extends structures to extend the built in, or already extended, classes to add more functionality. */
 declare abstract class Structure {
@@ -794,36 +739,41 @@ declare enum TrackSourceTypes {
     SoundCloud = "soundcloud",
     Spotify = "spotify",
     Tidal = "tidal",
-    VKMusic = "vkmusic"
+    VKMusic = "vkmusic",
+    YouTube = "youtube"
 }
 type TrackSourceName = keyof typeof TrackSourceTypes;
 interface Extendable {
     Player: typeof Player;
     Queue: typeof Queue;
     Node: typeof Node;
+    Manager: typeof Manager;
+    Rest: typeof Rest;
+    Filters: typeof Filters;
+    Plugin: typeof Plugin;
 }
 interface VoiceServer {
     token: string;
     guild_id: string;
-    endpoint: string;
-    channelId: string; 
-}
-interface VoiceState {
-    op: "voiceUpdate";
-    guildId: string;
-    event: VoiceServer;
-    sessionId?: string;
+    endpoint: string | null;
 }
 interface VoiceState {
     guild_id: string;
     user_id: string;
     session_id: string;
-    channel_id: string;
+    channel_id: string | null;
 }
-interface VoicePacket {
-    t?: "VOICE_SERVER_UPDATE" | "VOICE_STATE_UPDATE";
-    d: VoiceState | VoiceServer;
+interface PlayerVoiceState {
+    op: "voiceUpdate";
+    guild_id: string;
+    event?: Pick<VoiceServer, "token" | "endpoint">;
+    sessionId?: string;
+    channelId?: string;
 }
+type VoicePacket =
+    | { t: "VOICE_SERVER_UPDATE"; d: VoiceServer }
+    | { t: "VOICE_STATE_UPDATE"; d: VoiceState };
+
 interface NodeMessage extends NodeStats {
     type: PlayerEventType;
     op: "stats" | "playerUpdate" | "event";
@@ -934,7 +884,7 @@ declare class Manager extends EventEmitter {
      * @param options.enabledPlugins - An array of enabledPlugins to load.
      * @param options.nodes - An array of node options to create nodes from.
      * @param options.playNextOnEnd - Whether to automatically play the first track in the queue when the player is created.
-     * @param options.autoPlaySearchPlatforms - The search platform autoplay will use. Fallback to Youtube if not found.
+     * @param options.autoPlaySearchPlatforms - The recommendation sources autoplay will use in order.
      * @param options.enablePriorityMode - Whether to use the priority when selecting a node to play on.
      * @param options.clientName - The name of the client to send to Lavalink.
      * @param options.defaultSearchPlatform - The default search platform to use when searching for tracks.
@@ -957,13 +907,15 @@ declare class Manager extends EventEmitter {
      * @param requester
      * @returns The search result.
      */
-    search<T = unknown>(query: string | SearchQuery, requester?: T): Promise<SearchResult>;
+    search<T = unknown>(query: string | SearchQuery, requester?: T, sourcePlatforms?: string | readonly string[]): Promise<SearchResult>;
     /**
      * Creates a player or returns one if it already exists.
      * @param options The options to create the player with.
      * @returns The created player.
      */
     create(options: PlayerOptions): Player;
+    loadPlaylistInChunks<T = unknown>(player: Player, query: string | SearchQuery, requester?: T, sourcePlatforms?: string | readonly string[], chunkSize?: number): Promise<SearchResult>;
+    log(level: "error" | "warn" | "info" | "debug", message: string, ...args: unknown[]): void;
     /**
      * Returns a player or undefined if it does not exist.
      * @param guildId The guild ID of the player to retrieve.
@@ -996,6 +948,8 @@ declare class Manager extends EventEmitter {
      * @returns The manager instance for chaining.
      */
     on<T extends keyof ManagerEvents>(event: T, listener: (...args: ManagerEvents[T]) => void): this;
+    once<T extends keyof ManagerEvents>(event: T, listener: (...args: ManagerEvents[T]) => void): this;
+    off<T extends keyof ManagerEvents>(event: T, listener: (...args: ManagerEvents[T]) => void): this;
     /**
      * Updates the voice state of a player based on the provided data.
      * @param data - The data containing voice state information, which can be a VoicePacket, VoiceServer, or VoiceState.
@@ -1058,36 +1012,6 @@ declare class Manager extends EventEmitter {
      */
     private escapeRegExp;
     /**
-     * Checks if the given data is a voice update.
-     * @param data The data to check.
-     * @returns Whether the data is a voice update.
-     */
-    private isVoiceUpdate;
-    /**
-     * Determines if the provided update is a valid voice update.
-     * A valid update must contain either a token or a session_id.
-     *
-     * @param update - The voice update data to validate, which can be a VoicePacket, VoiceServer, or VoiceState.
-     * @returns {boolean} - True if the update is valid, otherwise false.
-     */
-    private isValidUpdate;
-    /**
-     * Handles a voice server update by updating the player's voice state and sending the voice state to the Lavalink node.
-     * @param player The player for which the voice state is being updated.
-     * @param update The voice server data received from Discord.
-     * @returns A promise that resolves when the voice state update is handled.
-     * @emits {debug} - Emits a debug message indicating the voice state is being updated.
-     */
-    private handleVoiceServerUpdate;
-    /**
-     * Handles a voice state update by updating the player's voice channel and session ID if provided, or by disconnecting and destroying the player if the channel ID is null.
-     * @param player The player for which the voice state is being updated.
-     * @param update The voice state data received from Discord.
-     * @emits {playerMove} - Emits a player move event if the channel ID is provided and the player is currently connected to a different voice channel.
-     * @emits {playerDisconnect} - Emits a player disconnect event if the channel ID is null.
-     */
-    private handleVoiceStateUpdate;
-    /**
      * Gets each player's JSON file
      * @param {string} guildId - The guild ID
      * @returns {string} The path to the player's JSON file
@@ -1099,11 +1023,6 @@ declare class Manager extends EventEmitter {
      * @returns The serialized Player instance
      */
     private serializePlayer;
-    /**
-     * Checks for players that are no longer active and deletes their saved state files.
-     * This is done to prevent stale state files from accumulating on the file system.
-     */
-    private cleanupInactivePlayers;
     /**
      * Returns the nodes that has the least load.
      * The load is calculated by dividing the lavalink load by the number of cores.
@@ -1162,14 +1081,21 @@ interface ManagerOptions {
     /** The last.fm API key.
      * If you need to create one go here: https://www.last.fm/api/account/create.
      * If you already have one, get it from here: https://www.last.fm/api/accounts. */
-    lastFmApiKey: string;
+    lastFmApiKey?: string;
     /** The maximum number of previous tracks to store. */
     maxPreviousTracks?: number;
+    maxQueueSize?: number;
+    playerInactivityTimeoutMs?: number;
+    trackCacheTtlMs?: number;
+    trackCacheMaxEntries?: number;
+    trackRetryAttempts?: number;
+    sessionDataPath?: string;
+    logLevel?: "error" | "warn" | "info" | "debug";
     /**
      * Called before Pulsify stops a track that raised a Lavalink exception.
      * Return true after recovering playback to prevent the default stop/skip path.
      */
-    trackErrorRecovery?: (player: Player, track: Track, payload: TrackExceptionEvent) => boolean | Promise<boolean>;
+    trackErrorRecovery?: (player: Player, track: Track, payload: TrackExceptionEvent | TrackStuckEvent) => boolean | Promise<boolean>;
     /** The array of nodes to connect to. */
     nodes?: NodeOptions[];
     /** An array of track properties to keep. `track` will always be present. */
@@ -1222,21 +1148,22 @@ declare enum UseNodeOptions {
 type UseNodeOption = keyof typeof UseNodeOptions;
 declare enum SearchPlatform {
     AppleMusic = "amsearch",
-    AmazonMusic = "amzsearch",
     AudioMack = "admsearch",
     Bandcamp = "bcsearch",
     Deezer = "dzsearch",
-    Gaana = "gasearch",
+    Gaana = "gnsearch",
     Jiosaavn = "jssearch",
     SoundCloud = "scsearch",
     Spotify = "spsearch",
-    Qobuz = "qbsearch",
     Tidal = "tdsearch",
-    VKMusic = "vksearch"
+    VKMusic = "vksearch",
+    YouTube = "ytsearch",
+    YouTubeMusic = "ytmsearch"
 }
 declare enum AutoPlayPlatform {
     Spotify = "spotify",
     Deezer = "deezer",
+    Jiosaavn = "jiosaavn",
     SoundCloud = "soundcloud",
     Tidal = "tidal",
     VKMusic = "vkmusic"
@@ -1296,7 +1223,7 @@ interface ChannelChangeEvent {
 }
 interface SearchQuery {
     /** The source to search from. */
-    source?: SearchPlatform;
+    source?: SearchPlatform | (string & {});
     /** The query to search for. */
     query: string;
 }
@@ -1385,19 +1312,19 @@ interface ManagerEvents {
     [ManagerEventTypes.NodeRaw]: [payload: unknown];
     [ManagerEventTypes.PlayerCreate]: [player: Player];
     [ManagerEventTypes.PlayerDestroy]: [player: Player];
-    [ManagerEventTypes.PlayerStateUpdate]: [oldPlayer: Player, newPlayer: Player, changeType: PlayerStateUpdateEvent];
-    [ManagerEventTypes.PlayerMove]: [player: Player, initChannel: string, newChannel: string];
-    [ManagerEventTypes.PlayerDisconnect]: [player: Player, oldChannel: string];
+    [ManagerEventTypes.PlayerStateUpdate]: [oldPlayer: Readonly<Player> | null, newPlayer: Player | null | undefined, changeType: PlayerStateUpdateEvent];
+    [ManagerEventTypes.PlayerMove]: [player: Player, initChannel: string | null, newChannel: string];
+    [ManagerEventTypes.PlayerDisconnect]: [player: Player, oldChannel: string | null];
     [ManagerEventTypes.QueueEnd]: [player: Player, track: Track, payload: TrackEndEvent];
     [ManagerEventTypes.SocketClosed]: [player: Player, payload: WebSocketClosedEvent];
     [ManagerEventTypes.TrackStart]: [player: Player, track: Track, payload: TrackStartEvent];
     [ManagerEventTypes.TrackEnd]: [player: Player, track: Track, payload: TrackEndEvent];
     [ManagerEventTypes.TrackStuck]: [player: Player, track: Track, payload: TrackStuckEvent];
     [ManagerEventTypes.TrackError]: [player: Player, track: Track, payload: TrackExceptionEvent];
-    [ManagerEventTypes.SegmentsLoaded]: [player: Player, track: Track, payload: SponsorBlockSegmentsLoaded];
-    [ManagerEventTypes.SegmentSkipped]: [player: Player, track: Track, payload: SponsorBlockSegmentSkipped];
-    [ManagerEventTypes.ChapterStarted]: [player: Player, track: Track, payload: SponsorBlockChapterStarted];
-    [ManagerEventTypes.ChaptersLoaded]: [player: Player, track: Track, payload: SponsorBlockChaptersLoaded];
+    [ManagerEventTypes.SegmentsLoaded]: [player: Player, track: Track | null, payload: SponsorBlockSegmentsLoaded];
+    [ManagerEventTypes.SegmentSkipped]: [player: Player, track: Track | null, payload: SponsorBlockSegmentSkipped];
+    [ManagerEventTypes.ChapterStarted]: [player: Player, track: Track | null, payload: SponsorBlockChapterStarted];
+    [ManagerEventTypes.ChaptersLoaded]: [player: Player, track: Track | null, payload: SponsorBlockChaptersLoaded];
 }
 
 declare class Player {
@@ -1435,7 +1362,7 @@ declare class Player {
     /** The equalizer bands array. */
     bands: number[];
     /** The voice state object from Discord. */
-    voiceState: VoiceState;
+    voiceState: PlayerVoiceState;
     /** The Manager. */
     manager: Manager;
     /** The autoplay state of the player. */
@@ -1450,7 +1377,7 @@ declare class Player {
     lastAutoplaySeedTrackId: string | null;
     /** The last user-requested track identifier seen by the player. */
     lastUserRequestedTrackId: string | null;
-    private static _manager;
+    private static managerRef;
     private readonly data;
     private dynamicLoopInterval;
     private dynamicRepeatIntervalMs;
@@ -1459,7 +1386,7 @@ declare class Player {
      * @param options The player options.
      * @see https://docs.magmastream.com/main/introduction/getting-started
      */
-    constructor(options: PlayerOptions);
+    constructor(options: PlayerOptions, manager?: Manager);
     /**
      * Set custom data.
      * @param key - The key to set the data for.
@@ -1484,7 +1411,7 @@ declare class Player {
      * @param query
      * @param requester
      */
-    search<T = unknown>(query: string | SearchQuery, requester?: T): Promise<SearchResult>;
+    search<T = unknown>(query: string | SearchQuery, requester?: T, sourcePlatforms?: string | readonly string[]): Promise<SearchResult>;
     /**
      * Connects the player to the voice channel.
      * @throws {RangeError} If no voice channel has been set.
@@ -1557,7 +1484,7 @@ declare class Player {
      * recommended track if the first one doesn't work.
      * @returns {this} - The player instance.
      */
-    setAutoplay<T = unknown>(autoplayState: boolean, botUser?: T, tries?: number): this;
+    setAutoplay(autoplayState: boolean, botUser?: { id: string }, tries?: number): this;
     /**
      * Gets recommended tracks and returns an array of tracks.
      * @param {Track} track - The track to find recommendations for.
@@ -1659,7 +1586,7 @@ declare class Player {
      * @throws {Error} If the position is invalid.
      * @emits {PlayerStateUpdate} - With {@link PlayerStateEventTypes.TrackChange} as the change type.
      */
-    seek(position: number): Promise<this>;
+    seek(position: number): Promise<this | undefined>;
     /**
      * Returns the current repeat state of the player.
      * @param player The player to get the repeat state from.
@@ -1703,7 +1630,7 @@ interface PlayerOptions {
     /** The guild ID the Player belongs to. */
     guildId: string;
     /** The text channel the Player belongs to. */
-    textChannelId: string;
+    textChannelId?: string;
     /** The voice channel the Player belongs to. */
     voiceChannelId?: string;
     /** The node the Player uses. */
@@ -1720,7 +1647,7 @@ interface Track {
     /** The base64 encoded track. */
     readonly track: string;
     /** The artwork url of the track. */
-    readonly artworkUrl: string;
+    readonly artworkUrl: string | null;
     /** The track source name. */
     readonly sourceName: TrackSourceName;
     /** The title of the track. */
@@ -1732,19 +1659,19 @@ interface Track {
     /** The duration of the track. */
     readonly duration: number;
     /** The ISRC of the track. */
-    readonly isrc: string;
+    readonly isrc: string | null;
     /** If the track is seekable. */
     readonly isSeekable: boolean;
     /** If the track is a stream.. */
     readonly isStream: boolean;
     /** The uri of the track. */
-    readonly uri: string;
+    readonly uri: string | null;
     /** The thumbnail of the track or null if it's a unsupported source. */
     readonly thumbnail: string | null;
     /** The user that requested the track. */
     requester?: User | ClientUser;
     /** Displays the track thumbnail with optional size or null if it's a unsupported source. */
-    displayThumbnail(size?: Sizes): string;
+    displayThumbnail(size?: Sizes): string | null;
     /** Additional track info provided by plugins. */
     pluginInfo: TrackPluginInfo;
     /** Add your own data to the track. */

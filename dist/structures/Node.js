@@ -5,7 +5,7 @@ const tslib_1 = require("tslib");
 const Utils_1 = require("./Utils");
 const Manager_1 = require("./Manager");
 const Rest_1 = require("./Rest");
-const nodeCheck_1 = tslib_1.__importDefault(require("../utils/nodeCheck"));
+const nodeCheck_1 = require("../utils/nodeCheck");
 const ws_1 = tslib_1.__importDefault(require("ws"));
 const fs_1 = tslib_1.__importDefault(require("fs"));
 const path_1 = tslib_1.__importDefault(require("path"));
@@ -21,12 +21,9 @@ var SponsorBlockSegment;
     SponsorBlockSegment["Filler"] = "filler";
 })(SponsorBlockSegment || (exports.SponsorBlockSegment = SponsorBlockSegment = {}));
 const validSponsorBlocks = Object.values(SponsorBlockSegment).map((v) => v.toLowerCase());
-const sessionIdsFilePath = path_1.default.join(require("../utils/sessionData").dataRoot, "dist", "sessionData", "sessionIds.json");
-let sessionIdsMap = new Map();
-const configDir = path_1.default.dirname(sessionIdsFilePath);
-if (!fs_1.default.existsSync(configDir)) {
-    fs_1.default.mkdirSync(configDir, { recursive: true });
-}
+const { randomUUID } = require("node:crypto");
+const { inspect } = require("node:util");
+const { scopePath } = require("../utils/sessionData");
 function getEventTrackKey(eventTrack) {
     if (typeof eventTrack === "string")
         return eventTrack;
@@ -37,18 +34,6 @@ function getEventTrackKey(eventTrack) {
     if (typeof eventTrack.track?.encoded === "string")
         return eventTrack.track.encoded;
     return null;
-}
-function isSupersededTrackEnd(player, eventTrackKey, currentTrackKey) {
-    if (!eventTrackKey || !currentTrackKey || eventTrackKey === currentTrackKey)
-        return false;
-    const now = Date.now();
-    const stored = player.get?.("Internal_SupersededTrackEnds");
-    const active = Array.isArray(stored)
-        ? stored.filter((entry) => entry?.track && Number(entry.until) > now)
-        : [];
-    if (active.length !== (stored?.length ?? 0))
-        player.set?.("Internal_SupersededTrackEnds", active);
-    return active.some((entry) => entry.track === eventTrackKey);
 }
 class Node {
     options;
@@ -64,19 +49,20 @@ class Node {
     rest;
     /** Actual Lavalink information of the node. */
     info = null;
-    static _manager;
+    static managerRef;
     reconnectTimeout;
     reconnecting = false;
     destroyed = false;
-    reconnectAttempts = 1;
+    reconnectAttempts = 0;
+    ready = false;
+    sessionInvalidated = false;
     /**
      * Creates an instance of Node.
      * @param options
      */
-    constructor(options) {
-        this.options = options;
-        if (!this.manager)
-            this.manager = Utils_1.Structure.get("Node")._manager;
+    constructor(options, manager = Utils_1.Structure.constructingManager ?? new.target.managerRef?.deref()) {
+        this.manager = manager;
+        if (!options || typeof options !== "object") throw new TypeError("Node options are required.");
         if (!this.manager)
             throw new RangeError("Manager has not been initiated.");
         if (this.manager.nodes.has(options.identifier || options.host)) {
@@ -91,20 +77,20 @@ class Node {
             sessionTimeoutMs: options.sessionTimeoutMs ?? options.resumeTimeout,
         };
         (0, nodeCheck_1.default)(normalizedOptions);
+        const { password, ...settings } = normalizedOptions;
         this.options = {
-            port: 2333,
-            password: "youshallnotpass",
-            useSSL: false,
-            maxRetryAttempts: 30,
-            retryDelayMs: 60000,
-            apiRequestTimeoutMs: 30000,
-            nodePriority: 0,
-            ...normalizedOptions,
+            ...settings,
+            port: options.port ?? (normalizedOptions.useSSL ? 443 : 2333),
+            identifier: options.identifier ?? options.host,
+            useSSL: normalizedOptions.useSSL ?? false,
+            enableSessionResumeOption: normalizedOptions.enableSessionResumeOption ?? false,
+            sessionTimeoutMs: normalizedOptions.sessionTimeoutMs ?? 60000,
+            maxRetryAttempts: normalizedOptions.maxRetryAttempts ?? 10,
+            retryDelayMs: normalizedOptions.retryDelayMs ?? 1000,
+            apiRequestTimeoutMs: options.apiRequestTimeoutMs ?? 10000,
+            nodePriority: options.nodePriority ?? 0,
         };
-        if (this.options.useSSL) {
-            this.options.port = 443;
-        }
-        this.options.identifier = options.identifier || options.host;
+        Object.defineProperty(this.options, "password", { value: password, writable: true });
         this.stats = {
             players: 0,
             playingPlayers: 0,
@@ -126,19 +112,18 @@ class Node {
                 deficit: 0,
             },
         };
+        this.rest = new Rest_1.Rest(this, this.manager);
         this.manager.nodes.set(this.options.identifier, this);
         this.manager.emit(Manager_1.ManagerEventTypes.NodeCreate, this);
-        this.rest = new Rest_1.Rest(this, this.manager);
-        this.createSessionIdsFile();
-        this.loadSessionIds();
-        // Create README file to inform the user about the session data folder
-        this.createReadmeFile();
+    }
+    [inspect.custom]() {
+        return { identifier: this.options.identifier, address: this.address, connected: this.connected };
     }
     /** Returns if connected to the Node. */
     get connected() {
         if (!this.socket)
             return false;
-        return this.socket.readyState === ws_1.default.OPEN;
+        return !this.destroyed && this.ready && this.socket.readyState === ws_1.default.OPEN;
     }
     /** Returns the address for this node. */
     get address() {
@@ -146,326 +131,216 @@ class Node {
     }
     /** @hidden */
     static init(manager) {
-        this._manager = manager;
+        this.managerRef = new WeakRef(manager);
     }
-    /**
-     * Creates the sessionIds.json file if it doesn't exist. This file is used to
-     * store the session IDs for each node. The session IDs are used to identify
-     * the node when resuming a session.
-     */
-    createSessionIdsFile() {
-        // If the sessionIds.json file does not exist, create it
-        if (!fs_1.default.existsSync(sessionIdsFilePath)) {
-            this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Creating sessionId file at: ${sessionIdsFilePath}`);
-            // Create the file with an empty object as the content
-            fs_1.default.writeFileSync(sessionIdsFilePath, JSON.stringify({}), "utf-8");
-        }
+    get sessionFile() {
+        const key = Buffer.from(this.options.identifier).toString("base64url");
+        return path_1.default.join(scopePath(this.manager), "nodes", key + ".json");
     }
-    /**
-     * Loads session IDs from the sessionIds.json file if it exists.
-     * The session IDs are used to resume sessions for each node.
-     *
-     * The session IDs are stored in the sessionIds.json file as a composite key
-     * of the node identifier and cluster ID. This allows multiple clusters to
-     * be used with the same node identifier.
-     */
+
     loadSessionIds() {
-        // Check if the sessionIds.json file exists
-        if (fs_1.default.existsSync(sessionIdsFilePath)) {
-            // Emit a debug event indicating that session IDs are being loaded
-            this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Loading sessionIds from file: ${sessionIdsFilePath}`);
-            // Read the content of the sessionIds.json file as a string
-            const sessionIdsData = fs_1.default.readFileSync(sessionIdsFilePath, "utf-8");
-            // Parse the JSON string into an object and convert it into a Map
+        if (!this.options.enableSessionResumeOption || this.sessionId || this.sessionInvalidated) return;
+        try {
+            let sessionId;
             try {
-                sessionIdsMap = new Map(Object.entries(JSON.parse(sessionIdsData)));
+                sessionId = JSON.parse(fs_1.default.readFileSync(this.sessionFile, "utf8")).sessionId;
+            } catch (error) {
+                if (error.code !== "ENOENT") throw error;
+                const legacy = path_1.default.join(require("../utils/sessionData").dataRoot, "dist", "sessionData", "sessionIds.json");
+                const sessions = JSON.parse(fs_1.default.readFileSync(legacy, "utf8"));
+                sessionId = sessions[this.options.identifier + "::" + this.manager.options.clusterId];
             }
-            catch (error) {
-                this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Failed to parse sessionIds file, resetting cache: ${error}`);
-                sessionIdsMap = new Map();
-                fs_1.default.writeFileSync(sessionIdsFilePath, JSON.stringify({}), "utf-8");
-            }
-            // Check if the session IDs Map contains the session ID for this node
-            const compositeKey = `${this.options.identifier}::${this.manager.options.clusterId}`;
-            if (sessionIdsMap.has(compositeKey)) {
-                // Set the session ID on this node if it exists in the session IDs Map
-                this.sessionId = sessionIdsMap.get(compositeKey);
-            }
+            if (typeof sessionId === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(sessionId)) this.sessionId = sessionId;
+        } catch (error) {
+            if (error.code !== "ENOENT") this.error(new Error("Could not read the Lavalink session file."));
         }
     }
-    /**
-     * Updates the session ID in the sessionIds.json file.
-     *
-     * This method is called after the session ID has been updated, and it
-     * writes the new session ID to the sessionIds.json file.
-     *
-     * @remarks
-     * The session ID is stored in the sessionIds.json file as a composite key
-     * of the node identifier and cluster ID. This allows multiple clusters to
-     * be used with the same node identifier.
-     */
+
     updateSessionId() {
-        // Emit a debug event indicating that the session IDs are being updated
-        this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Updating sessionIds to file: ${sessionIdsFilePath}`);
-        // Create a composite key using identifier and clusterId
-        const compositeKey = `${this.options.identifier}::${this.manager.options.clusterId}`;
-        // Update the session IDs Map with the new session ID
-        sessionIdsMap.set(compositeKey, this.sessionId);
-        // Write the updated session IDs Map to the sessionIds.json file
-        fs_1.default.writeFileSync(sessionIdsFilePath, JSON.stringify(Object.fromEntries(sessionIdsMap)));
-    }
-    /**
-     * Connects to the Node.
-     *
-     * @remarks
-     * If the node is already connected, this method will do nothing.
-     * If the node has a session ID, it will be sent in the headers of the WebSocket connection.
-     * If the node has no session ID but the `enableSessionResumeOption` option is true, it will use the session ID
-     * stored in the sessionIds.json file if it exists.
-     */
-    connect() {
-        if (this.destroyed || this.connected || (this.socket && this.socket.readyState === ws_1.default.CONNECTING))
-            return;
-        if (this.socket) {
-            this.socket.removeAllListeners();
-            if (this.socket.readyState !== ws_1.default.CLOSED) {
-                this.socket.close(1000, "reconnect");
-            }
-            this.socket = null;
+        if (!this.options.enableSessionResumeOption) return;
+        const file = this.sessionFile;
+        const temporary = file + "." + randomUUID() + ".tmp";
+        try {
+            fs_1.default.mkdirSync(path_1.default.dirname(file), { recursive: true, mode: 0o700 });
+            fs_1.default.writeFileSync(temporary, JSON.stringify({ sessionId: this.sessionId }), { flag: "wx", mode: 0o600 });
+            fs_1.default.renameSync(temporary, file);
+        } catch {
+            this.error(new Error("Could not save the Lavalink session ID."));
+        } finally {
+            try { fs_1.default.rmSync(temporary, { force: true }); } catch { /* best effort */ }
         }
+    }
+
+    invalidateSession(id) {
+        if (this.sessionId !== id || this.destroyed) return;
+        this.sessionId = null;
+        this.rest.setSessionId(null);
+        this.sessionInvalidated = true;
+        this.updateSessionId();
+        this.ready = false;
+        this.socket?.terminate();
+    }
+
+    connect() {
+        if (this.destroyed || this.socket) return;
+        clearTimeout(this.reconnectTimeout);
+        this.reconnectTimeout = undefined;
+        this.reconnecting = false;
+        this.loadSessionIds();
         const headers = {
             Authorization: this.options.password,
             "User-Id": this.manager.options.clientId,
             "Client-Name": this.manager.options.clientName,
         };
-        const compositeKey = `${this.options.identifier}::${this.manager.options.clusterId}`;
-        if (this.sessionId) {
-            headers["Session-Id"] = this.sessionId;
-        }
-        else if (this.options.enableSessionResumeOption && sessionIdsMap.has(compositeKey)) {
-            this.sessionId = sessionIdsMap.get(compositeKey) || null;
-            headers["Session-Id"] = this.sessionId;
-        }
-        this.socket = new ws_1.default(`ws${this.options.useSSL ? "s" : ""}://${this.address}/v4/websocket`, { headers });
-        this.socket.on("open", this.open.bind(this));
-        this.socket.on("close", this.close.bind(this));
-        this.socket.on("message", (data) => {
-            this.message(data).catch((error) => this.error(error));
+        if (this.options.enableSessionResumeOption && this.sessionId) headers["Session-Id"] = this.sessionId;
+        const scheme = this.options.useSSL ? "wss" : "ws";
+        const socket = new ws_1.default(scheme + "://" + this.address + "/v4/websocket", {
+            headers, handshakeTimeout: this.options.apiRequestTimeoutMs ?? 10000, maxPayload: 1024 * 1024,
         });
-        this.socket.on("error", this.error.bind(this));
-        const debugInfo = {
-            connected: this.connected,
-            address: this.address,
-            sessionId: this.sessionId,
-            options: {
-                clientId: this.manager.options.clientId,
-                clientName: this.manager.options.clientName,
-                useSSL: this.options.useSSL,
-                identifier: this.options.identifier,
-            },
-        };
-        this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Connecting ${JSON.stringify(debugInfo)}`);
-    }
-    /**
-     * Destroys the node and cleans up associated resources.
-     *
-     * This method emits a debug event indicating that the node is being destroyed and attempts
-     * to automatically move all players connected to the node to a usable one. It then closes
-     * the WebSocket connection, removes all event listeners, and clears the reconnect timeout.
-     * Finally, it emits a "nodeDestroy" event and removes the node from the manager.
-     *
-     * @returns {Promise<void>} A promise that resolves when the node and its resources have been destroyed.
-     */
-    async destroy() {
-        this.destroyed = true;
-        this.reconnecting = false;
-        this.reconnectAttempts = 1;
-        if (this.reconnectTimeout) {
-            clearTimeout(this.reconnectTimeout);
-            this.reconnectTimeout = undefined;
-        }
-        if (!this.connected) {
-            this.socket?.removeAllListeners();
-            this.socket?.close(1000, "destroy");
-            this.socket = null;
-            this.manager.nodes.delete(this.options.identifier);
-            return;
-        }
-        // Emit a debug event indicating that the node is being destroyed
-        const debugInfo = {
-            connected: this.connected,
-            identifier: this.options.identifier,
-            address: this.address,
-            sessionId: this.sessionId,
-            playerCount: this.manager.players.filter((p) => p.node == this).size,
-        };
-        this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Destroying node: ${JSON.stringify(debugInfo)}`);
-        // Automove all players connected to that node
-        const players = this.manager.players.filter((p) => p.node == this);
-        if (players.size) {
-            await Promise.allSettled(Array.from(players.values(), (player) => player.autoMoveNode()));
-        }
-        // Close the WebSocket connection
-        this.socket.close(1000, "destroy");
-        // Remove all event listeners on the WebSocket
-        this.socket.removeAllListeners();
-        this.socket = null;
-        // Emit a "nodeDestroy" event with the node as the argument
-        this.manager.emit(Manager_1.ManagerEventTypes.NodeDestroy, this);
-        // Remove the node from manager storage.
-        this.manager.nodes.delete(this.options.identifier);
-    }
-    /**
-     * Attempts to reconnect to the node if the connection is lost.
-     *
-     * This method is called when the WebSocket connection is closed
-     * unexpectedly. It will attempt to reconnect to the node after a
-     * specified delay, and will continue to do so until the maximum
-     * number of retry attempts is reached or the node is manually destroyed.
-     * If the maximum number of retry attempts is reached, an error event
-     * will be emitted and the node will be destroyed.
-     *
-     * @returns {Promise<void>} - Resolves when the reconnection attempt is scheduled.
-     * @emits {debug} - Emits a debug event indicating the node is attempting to reconnect.
-     * @emits {nodeReconnect} - Emits a nodeReconnect event when the node is attempting to reconnect.
-     * @emits {nodeError} - Emits an error event if the maximum number of retry attempts is reached.
-     * @emits {nodeDestroy} - Emits a nodeDestroy event if the maximum number of retry attempts is reached.
-     */
-    async reconnect() {
-        if (this.destroyed || this.connected || this.reconnecting)
-            return;
-        this.reconnecting = true;
-        // Collect debug information regarding the current state of the node
-        const debugInfo = {
-            identifier: this.options.identifier,
-            connected: this.connected,
-            reconnectAttempts: this.reconnectAttempts,
-            maxRetryAttempts: this.options.maxRetryAttempts,
-            retryDelayMs: this.options.retryDelayMs,
-        };
-        // Emit a debug event indicating the node is attempting to reconnect
-        this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Reconnecting node: ${JSON.stringify(debugInfo)}`);
-        // Schedule the reconnection attempt after the specified retry delay
-        const backoffDelay = Math.min(this.options.retryDelayMs * Math.pow(2, Math.max(0, this.reconnectAttempts - 1)), 300000);
-        this.reconnectTimeout = setTimeout(async () => {
-            this.reconnectTimeout = undefined;
-            this.reconnecting = false;
-            if (this.destroyed || this.connected)
-                return;
-            // Check if the maximum number of retry attempts has been reached
-            if (this.reconnectAttempts >= this.options.maxRetryAttempts) {
-                // Emit an error event and destroy the node if retries are exhausted
-                const error = new Error(`Unable to connect after ${this.options.maxRetryAttempts} attempts.`);
-                this.manager.emit(Manager_1.ManagerEventTypes.NodeError, this, error);
-                return await this.destroy();
+        this.socket = socket;
+        socket.on("open", () => this.open());
+        socket.on("close", (code, reason) => {
+            if (this.socket === socket) {
+                Promise.resolve().then(() => this.close(code, reason.toString())).catch(error => this.error(error));
             }
-            // Remove all listeners from the current WebSocket and reset it
-            this.socket?.removeAllListeners();
+        });
+        socket.on("message", data => this.message(data).catch(error => this.error(error)));
+        socket.on("error", () => this.error(new Error("Lavalink WebSocket transport error.")));
+    }
+
+    async destroy() {
+        if (this.destroyed) return;
+        this.destroyed = true;
+        this.ready = false;
+        clearTimeout(this.reconnectTimeout);
+        clearTimeout(this.readyTimeout);
+        clearInterval(this.heartbeat);
+        try {
+            await this.movePlayers(true);
+        } finally {
+            this.socket?.terminate();
             this.socket = null;
-            // Emit a nodeReconnect event and attempt to connect again
-            this.manager.emit(Manager_1.ManagerEventTypes.NodeReconnect, this);
-            this.connect();
-            // Increment the reconnect attempts counter
-            this.reconnectAttempts++;
-        }, backoffDelay);
-    }
-    /**
-     * Handles the "open" event emitted by the WebSocket connection.
-     *
-     * This method is called when the WebSocket connection is established.
-     * It clears any existing reconnect timeouts, emits a debug event
-     * indicating the node is connected, and emits a "nodeConnect" event
-     * with the node as the argument.
-     */
-    open() {
-        // Clear any existing reconnect timeouts
-        if (this.reconnectTimeout) {
-            clearTimeout(this.reconnectTimeout);
-            this.reconnectTimeout = undefined;
+            if (this.manager.nodes.get(this.options.identifier) === this) this.manager.nodes.delete(this.options.identifier);
+            this.manager.emit(Manager_1.ManagerEventTypes.NodeDestroy, this);
         }
-        this.reconnecting = false;
-        this.reconnectAttempts = 1;
-        // Collect debug information regarding the current state of the node
-        const debugInfo = {
-            identifier: this.options.identifier,
-            connected: this.connected,
-        };
-        // Emit a debug event indicating the node is connected
-        this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Connected node: ${JSON.stringify(debugInfo)}`);
-        // Emit a "nodeConnect" event with the node as the argument
-        this.manager.emit(Manager_1.ManagerEventTypes.NodeConnect, this);
     }
-    /**
-     * Handles the "close" event emitted by the WebSocket connection.
-     *
-     * This method is called when the WebSocket connection is closed.
-     * It emits a "nodeDisconnect" event with the node and the close event as arguments,
-     * and a debug event indicating the node is disconnected.
-     * It then attempts to move all players connected to that node to a useable one.
-     * If the close event was not initiated by the user, it will also attempt to reconnect.
-     *
-     * @param {number} code The close code of the WebSocket connection.
-     * @param {string} reason The reason for the close event.
-     * @returns {Promise<void>} A promise that resolves when the disconnection is handled.
-     */
-    async close(code, reason) {
-        const debugInfo = {
-            identifier: this.options.identifier,
-            code,
-            reason,
-        };
-        // Emit a "nodeDisconnect" event with the node and the close event as arguments
-        this.manager.emit(Manager_1.ManagerEventTypes.NodeDisconnect, this, { code, reason });
-        // Emit a debug event indicating the node is disconnected
-        this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Disconnected node: ${JSON.stringify(debugInfo)}`);
-        // Try moving all players connected to that node to a useable one
-        if (this.manager.nodes.some((node) => node.connected && node !== this)) {
-            const players = this.manager.players.filter((p) => p.node.options.identifier == this.options.identifier);
-            if (players.size) {
-                // Move one player at a time. The reservation-aware selector
-                // distributes migrations and avoids a request burst at the
-                // external audio source.
-                for (const player of players.values()) {
-                    const target = this.manager.getFailoverNode(this);
-                    if (!target)
-                        break;
-                    try {
-                        await player.moveNode(target.options.identifier);
-                    }
-                    catch (error) {
-                        this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Failed to move player ${player.guildId}: ${error}`);
-                    }
-                    finally {
-                        this.manager.releaseFailoverReservation(target);
-                    }
-                    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    async movePlayers(destroyRemaining) {
+        const players = this.manager.players.values();
+        const worker = async () => {
+            for (const player of players) {
+                if (player.node !== this || player.destroyRequested) continue;
+                const target = this.manager.getFailoverNode(this);
+                try {
+                    if (target) await player.moveNode(target.options.identifier);
+                } catch (error) {
+                    this.error(error);
+                } finally {
+                    if (target) this.manager.releaseFailoverReservation(target);
+                }
+                if (destroyRemaining && player.node === this) {
+                    try { await player.destroy(); } catch (error) { this.error(error); }
                 }
             }
-        }
-        // If the close event was not initiated by the user, attempt to reconnect
-        if (code !== 1000 || reason !== "destroy")
-            await this.reconnect();
-    }
-    /**
-     * Handles the "error" event emitted by the WebSocket connection.
-     *
-     * This method is called when an error occurs on the WebSocket connection.
-     * It emits a "nodeError" event with the node and the error as arguments and
-     * a debug event indicating the error on the node.
-     * @param {Error} error The error that occurred.
-     */
-    error(error) {
-        if (!error)
-            return;
-        // Collect debug information regarding the error
-        const debugInfo = {
-            identifier: this.options.identifier,
-            error: error.message,
         };
-        // Emit a debug event indicating the error on the node
-        this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Error on node: ${JSON.stringify(debugInfo)}`);
-        // Emit a "nodeError" event with the node and the error as arguments
-        this.manager.emit(Manager_1.ManagerEventTypes.NodeError, this, error);
+        await Promise.all(Array.from({ length: Math.min(this.localPlayers ?? 0, 8) }, worker));
+    }
+
+    async reconnect() {
+        if (this.destroyed || this.socket || this.reconnecting) return;
+        this.reconnecting = true;
+        const exhausted = this.reconnectAttempts >= this.options.maxRetryAttempts;
+        const delay = Math.min(this.options.retryDelayMs * 2 ** Math.min(this.reconnectAttempts, 20), 60000);
+        this.reconnectTimeout = setTimeout(() => {
+            this.reconnectTimeout = undefined;
+            this.reconnecting = false;
+            if (this.destroyed || this.socket) return;
+            if (exhausted) {
+                this.error(new Error("Lavalink reconnect attempts exhausted."));
+                this.destroy().catch(error => this.error(error));
+                return;
+            }
+            this.reconnectAttempts++;
+            try {
+                this.manager.emit(Manager_1.ManagerEventTypes.NodeReconnect, this);
+                this.connect();
+            } catch (error) {
+                this.error(error);
+                this.reconnect().catch(nextError => this.error(nextError));
+            }
+        }, exhausted ? 0 : delay);
+        this.reconnectTimeout.unref();
+    }
+
+    open() {
+        const socket = this.socket;
+        this.readyTimeout = setTimeout(() => socket.terminate(), this.options.apiRequestTimeoutMs);
+        this.readyTimeout.unref();
+        let alive = true;
+        socket.on("pong", () => { alive = true; });
+        this.heartbeat = setInterval(() => {
+            if (!alive) { socket.terminate(); return; }
+            alive = false;
+            socket.ping();
+        }, 30000);
+        this.heartbeat.unref();
+    }
+
+    async close(code, reason) {
+        this.ready = false;
+        this.readiness = undefined;
+        this.socket = null;
+        clearTimeout(this.readyTimeout);
+        clearInterval(this.heartbeat);
+        if (this.destroyed) return;
+        this.info = null;
+        this.manager.emit(Manager_1.ManagerEventTypes.NodeDisconnect, this, { code, reason });
+        if (!this.options.enableSessionResumeOption || this.sessionInvalidated) await this.movePlayers(false);
+        if (!this.options.enableSessionResumeOption) {
+            this.sessionId = null;
+            this.rest.setSessionId(null);
+        }
+        await this.reconnect();
+    }
+
+    error(error) {
+        if (error) this.manager.emit(Manager_1.ManagerEventTypes.NodeError, this, error);
+    }
+
+    async applyReady(payload, socket) {
+        if (typeof payload.sessionId !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(payload.sessionId) ||
+            typeof payload.resumed !== "boolean") throw new Error("Invalid Lavalink ready message.");
+        const live = () => this.socket === socket && !this.destroyed;
+        this.sessionId = payload.sessionId;
+        this.rest.setSessionId(payload.sessionId);
+        this.sessionInvalidated = false;
+        if (this.options.enableSessionResumeOption) {
+            await this.rest.updateSession(true, Math.ceil(this.options.sessionTimeoutMs / 1000));
+            if (!live()) return;
+            this.updateSessionId();
+        }
+        const info = await this.fetchInfo();
+        if (!info || !Array.isArray(info.sourceManagers) || !Array.isArray(info.plugins)) throw new Error("Invalid Lavalink node info response.");
+        this.info = info;
+        if (!live()) return;
+        if (this.options.enableSessionResumeOption) {
+            try { await this.manager.loadPlayerStates(this.options.identifier, payload.resumed); }
+            catch (error) { this.error(error); }
+        }
+        for (const player of this.manager.players.values()) {
+            if (!live()) return;
+            if (player.node !== this || player.destroyRequested) continue;
+            try {
+                if (!payload.resumed) await player.resyncState();
+                await this.manager.sendVoiceUpdate(player);
+            } catch (error) {
+                this.error(error);
+            }
+        }
+        if (!live()) return;
+        this.ready = true;
+        this.reconnectAttempts = 0;
+        this.manager.emit(Manager_1.ManagerEventTypes.NodeConnect, this);
     }
     /**
      * Handles incoming messages from the Lavalink WebSocket connection.
@@ -476,454 +351,169 @@ class Node {
      * @emits {nodeRaw} - Emits a nodeRaw event with the raw message received from the WebSocket connection.
      * @private
      */
-    async message(d) {
-        if (Array.isArray(d))
-            d = Buffer.concat(d);
-        else if (d instanceof ArrayBuffer)
-            d = Buffer.from(d);
+    async message(data) {
         let payload;
-        try {
-            payload = JSON.parse(d.toString());
-        }
-        catch (error) {
-            this.manager.emit(Manager_1.ManagerEventTypes.NodeError, this, error);
-            this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Failed to parse websocket message: ${error}`);
+        try { payload = JSON.parse(data.toString()); }
+        catch { this.error(new Error("Malformed Lavalink WebSocket message.")); return; }
+        if (!payload || typeof payload.op !== "string" || this.destroyed) return;
+        const socket = this.socket;
+        if (payload.op === "ready") {
+            if (this.readiness || !socket || this.destroyed) return;
+            clearTimeout(this.readyTimeout);
+            this.readiness = this.applyReady(payload, socket);
+            try { await this.readiness; }
+            catch (error) { socket.terminate(); throw error; }
+            this.manager.emit(Manager_1.ManagerEventTypes.NodeRaw, payload);
             return;
         }
-        if (!payload.op)
-            return;
         this.manager.emit(Manager_1.ManagerEventTypes.NodeRaw, payload);
-        let player;
-        switch (payload.op) {
-            case "stats":
-                delete payload.op;
+        if (payload.op === "stats") {
+            if (Number.isFinite(payload.players) && payload.cpu && payload.memory) {
                 this.stats = { ...payload };
-                break;
-            case "playerUpdate":
-                player = this.manager.players.get(payload.guildId);
-                if (player && player.node.options.identifier !== this.options.identifier) {
-                    return;
-                }
-                if (player)
-                    player.position = payload.state.position || 0;
-                break;
-            case "event":
-                player = this.manager.players.get(payload.guildId);
-                if (player && player.node.options.identifier !== this.options.identifier) {
-                    return;
-                }
-                this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Node message: ${JSON.stringify(payload)}`);
-                await this.handleEvent(payload);
-                break;
-            case "ready":
-                this.manager.emit(
-                    Manager_1.ManagerEventTypes.Debug,
-                    `[NODE] Node message: ${JSON.stringify(payload)}`
-                );
-
-                this.rest.setSessionId(payload.sessionId);
-                this.sessionId = payload.sessionId;
-                this.updateSessionId();
-
-                this.info = await this.fetchInfo();
-
-                // If session was resumed, restore saved players
-                if (payload.resumed) {
-                    await this.manager.loadPlayerStates(this.options.identifier);
-                }
-
-                // Re-enable session resume if configured
-                if (this.options.enableSessionResumeOption) {
-                    await this.rest.patch(`/v4/sessions/${this.sessionId}`, {
-                        resuming: this.options.enableSessionResumeOption,
-                        timeout: this.options.sessionTimeoutMs,
-                    });
-                }
-
-                // ==========================
-                // ✅ DAVE VOICE RE-SYNC FIX
-                // ==========================
-                for (const player of this.manager.players.values()) {
-                    if (player.node !== this) continue;
-                    if (!player.voiceChannelId) continue;
-
-                    try {
-                        await player.resyncState();
-
-                        this.manager.emit(
-                            Manager_1.ManagerEventTypes.Debug,
-                            `[DAVE] Re-synced player state for guild ${player.guildId}`
-                        );
-                    } catch (err) {
-                        this.manager.emit(
-                            Manager_1.ManagerEventTypes.Debug,
-                            `[DAVE] Failed to re-sync player state for guild ${player.guildId}: ${err}`
-                        );
-                    }
-                }
-
-                break;
-            default:
-                this.manager.emit(Manager_1.ManagerEventTypes.NodeError, this, new Error(`Unexpected op "${payload.op}" with data: ${payload.message}`));
-                return;
-        }
-    }
-    /**
-     * Handles an event emitted from the Lavalink node.
-     * @param {PlayerEvent & PlayerEvents} payload The event emitted from the node.
-     * @returns {Promise<void>} A promise that resolves when the event has been handled.
-     * @private
-     */
-    async handleEvent(payload) {
-        if (!payload.guildId)
+                delete this.stats.op;
+            }
             return;
+        }
+        if (!this.ready) {
+            if (!this.readiness) return;
+            await this.readiness;
+        }
+        if (this.socket !== socket || !this.connected) return;
         const player = this.manager.players.get(payload.guildId);
-        if (!player || player.destroyRequested)
+        if (!player || player.destroyRequested || (player.node !== this && player.movingTo !== this)) return;
+        if (payload.op === "playerUpdate") {
+            if (player.node === this && Number.isFinite(payload.state?.position) && !player.pendingOperations) player.position = payload.state.position;
+            if (payload.state?.connected === true) player.voiceRecoveryAttempted = false;
+        } else if (payload.op === "event") {
+            await this.handleEvent(payload);
+        }
+    }
+    async handleEvent(payload) {
+        const player = this.manager.players.get(payload.guildId);
+        if (!player || player.destroyRequested) return;
+        if ((player.pendingEvents ?? 0) >= 128) {
+            this.error(new Error("Too many queued Lavalink events for a player."));
             return;
-        const type = payload.type;
+        }
+        player.pendingEvents = (player.pendingEvents ?? 0) + 1;
+        const socket = this.socket;
         const processEvent = async () => {
-        const track = player.queue.current;
-        let error;
-        switch (type) {
-            case "TrackStartEvent":
-                this.trackStart(player, track, payload);
-                break;
-            case "TrackEndEvent":
-                if (player?.nowPlayingMessage && player?.nowPlayingMessage.deletable) {
-                    await player?.nowPlayingMessage?.delete().catch(() => { });
-                }
-                await this.trackEnd(player, track, payload);
-                break;
-            case "TrackStuckEvent":
-                await this.trackStuck(player, track, payload);
-                break;
-            case "TrackExceptionEvent":
-                await this.trackError(player, track, payload);
-                break;
-            case "WebSocketClosedEvent":
-                this.socketClosed(player, payload);
-                break;
-            case "SegmentsLoaded":
-                this.sponsorBlockSegmentLoaded(player, player.queue.current, payload);
-                break;
-            case "SegmentSkipped":
-                this.sponsorBlockSegmentSkipped(player, player.queue.current, payload);
-                break;
-            case "ChaptersLoaded":
-                this.sponsorBlockChaptersLoaded(player, player.queue.current, payload);
-                break;
-            case "ChapterStarted":
-                this.sponsorBlockChapterStarted(player, player.queue.current, payload);
-                break;
-            default:
-                error = new Error(`Node#event unknown event '${type}'.`);
-                this.manager.emit(Manager_1.ManagerEventTypes.NodeError, this, error);
-                break;
-        }
+            await player.operationQueue;
+            if (player.destroyRequested || player.node !== this || this.socket !== socket) return;
+            const track = player.queue.current;
+            const type = payload.type;
+            if (["TrackStartEvent", "TrackEndEvent", "TrackStuckEvent", "TrackExceptionEvent"].includes(type)) {
+                if (!track || getEventTrackKey(payload.track) !== track.track) return;
+                const eventId = payload.track?.userData?.pulsifyPlaybackId;
+                if (player.playbackId && eventId !== player.playbackId) return;
+            }
+            switch (type) {
+                case "TrackStartEvent": this.trackStart(player, track, payload); break;
+                case "TrackEndEvent": await this.trackEnd(player, track, payload); break;
+                case "TrackStuckEvent": await this.trackStuck(player, track, payload); break;
+                case "TrackExceptionEvent": await this.trackError(player, track, payload); break;
+                case "WebSocketClosedEvent": this.socketClosed(player, payload); break;
+                case "SegmentsLoaded": this.sponsorBlockSegmentLoaded(player, track, payload); break;
+                case "SegmentSkipped": this.sponsorBlockSegmentSkipped(player, track, payload); break;
+                case "ChaptersLoaded": this.sponsorBlockChaptersLoaded(player, track, payload); break;
+                case "ChapterStarted": this.sponsorBlockChapterStarted(player, track, payload); break;
+                default: this.error(new Error("Unexpected Lavalink event type."));
+            }
         };
-        player.eventQueue = (player.eventQueue ?? Promise.resolve()).then(processEvent, processEvent);
-        await player.eventQueue;
+        const result = player.eventQueue.then(processEvent);
+        player.eventQueue = result.then(() => { player.pendingEvents--; }, () => { player.pendingEvents--; });
+        await result;
     }
-    /**
-     * Emitted when a new track starts playing.
-     * @param {Player} player The player that started playing the track.
-     * @param {Track} track The track that started playing.
-     * @param {TrackStartEvent} payload The payload of the event emitted by the node.
-     * @private
-     */
+
     trackStart(player, track, payload) {
-        const oldPlayer = player;
-        player.playing = true;
-        player.paused = false;
-        player.set("trackFailureAttempts", 0);
+        if (player.playbackId && player.lastStartedPlaybackId === player.playbackId) return;
+        player.lastStartedPlaybackId = player.playbackId;
+        const oldPlayer = { ...player };
+        player.playing = !player.paused;
         this.manager.emit(Manager_1.ManagerEventTypes.TrackStart, player, track, payload);
-        const botUser = player.get("Internal_BotUser");
-        if (botUser && botUser.id === track?.requester?.id) {
-            this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, player, {
-                changeType: Manager_1.PlayerStateEventTypes.TrackChange,
-                details: {
-                    changeType: "autoPlay",
-                    track: track,
-                },
-            });
-            return;
-        }
+        const changeType = player.isAutoplayTrack(track) ? "autoPlay" : "start";
         this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, player, {
-            changeType: Manager_1.PlayerStateEventTypes.TrackChange,
-            details: {
-                changeType: "start",
-                track: track,
-            },
+            changeType: Manager_1.PlayerStateEventTypes.TrackChange, details: { changeType, track },
         });
     }
-    /**
-     * Emitted when a track ends playing.
-     * @param {Player} player - The player that the track ended on.
-     * @param {Track} track - The track that ended.
-     * @param {TrackEndEvent} payload - The payload of the event emitted by the node.
-     * @private
-     */
+
     async trackEnd(player, track, payload) {
-        const { reason } = payload;
-        const currentTrack = player.queue?.current;
-        const eventTrackKey = getEventTrackKey(payload?.track);
-        if (isSupersededTrackEnd(player, eventTrackKey, currentTrack?.track)) {
-            this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Ignoring end event for superseded track in ${player.guildId}: ` +
-                `reason=${reason} event=${eventTrackKey} current=${currentTrack.track}`);
+        const reasons = Utils_1.TrackEndReasonTypes;
+        const reason = payload.reason;
+        if (reason === reasons.Replaced) return;
+        if (!Object.values(reasons).includes(reason)) {
+            this.error(new Error("Unexpected Lavalink track end reason."));
             return;
         }
-        const signature = `${track?.track ?? track?.identifier ?? "unknown"}:${reason}`;
-        const previousEnd = player.get("lastTrackEnd");
-        if (previousEnd?.signature === signature && Date.now() - previousEnd.at < 2000)
-            return;
-        player.set("lastTrackEnd", { signature, at: Date.now() });
-        const skipFlag = player.get("skipFlag");
-        if (!skipFlag && (player.queue.previous.length === 0 || (player.queue.previous[0] && player.queue.previous[0].track !== player.queue.current?.track))) {
-            // Store the current track in the previous tracks queue
-            player.queue.previous.push(player.queue.current);
-            // Limit the previous tracks queue to maxPreviousTracks
-            if (player.queue.previous.length > this.manager.options.maxPreviousTracks) {
-                player.queue.previous.shift();
-            }
-        }
-        const oldPlayer = player;
-        // Handle track end events
-        switch (reason) {
-            case Utils_1.TrackEndReasonTypes.LoadFailed:
-            case Utils_1.TrackEndReasonTypes.Cleanup:
-                // Handle the case when a track failed to load or was cleaned up
-                await this.handleFailedTrack(player, track, payload);
-                break;
-            case Utils_1.TrackEndReasonTypes.Replaced:
-                // Handle the case when a track was replaced
-                break;
-            case Utils_1.TrackEndReasonTypes.Stopped:
-                // If the track was forcibly replaced
-                if (player.queue.length) {
-                    await this.playNextTrack(player, track, payload);
-                }
-                else {
-                    await this.queueEnd(player, track, payload);
-                }
-                break;
-            case Utils_1.TrackEndReasonTypes.Finished:
-                // If the track ended and it's set to repeat (track or queue)
-                if (track && (player.trackRepeat || player.queueRepeat)) {
-                    await this.handleRepeatedTrack(player, track, payload);
-                    break;
-                }
-                // If there's another track in the queue
-                if (player.queue.length) {
-                    await this.playNextTrack(player, track, payload);
-                }
-                else {
-                    await this.queueEnd(player, track, payload);
-                }
-                break;
-            default:
-                this.manager.emit(Manager_1.ManagerEventTypes.NodeError, this, new Error(`Unexpected track end reason "${reason}"`));
-                break;
-        }
-        this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, player, {
-            changeType: Manager_1.PlayerStateEventTypes.TrackChange,
-            details: {
-                changeType: "end",
-                track: track,
-            },
-        });
-    }
-    /**
-     * Handles autoplay logic for a player.
-     * This method is responsible for selecting an appropriate method of autoplay
-     * and executing it. If autoplay is not enabled or all attempts have failed,
-     * it will return false.
-     * @param {Player} player - The player to handle autoplay for.
-     * @param {number} attempt - The current attempt number of the autoplay.
-     * @returns {Promise<boolean>} A promise that resolves to a boolean indicating if autoplay was successful.
-     * @private
-     */
-    async handleAutoplay(player, track, payload, attempt = 0) {
-        // If autoplay is not enabled or all attempts have failed, early exit
-        if (!player.isAutoplay || !player.autoplayEnabled || attempt > player.autoplayTries)
-            return false;
-        if (!track || typeof track !== "object") {
-            console.warn("Autoplay error: lastTrack is null or invalid.");
-            return false;
-        }
-        const botUser = player.get("Internal_BotUser");
-        if (!botUser) {
-            console.warn("Autoplay error: Internal_BotUser not found on player.");
-            return false;
-        }
-        if (payload?.reason !== Utils_1.TrackEndReasonTypes.Finished)
-            return false;
-        const shouldRefreshPool = !player.isAutoplayTrack(track) || !player.autoplayPool.length;
-        if (shouldRefreshPool) {
-            await player.refreshAutoplayPool(track, !!player.autoplayPool.length && !player.isAutoplayTrack(track));
-        }
-        if (player.autoplayPool.length) {
-            return await player.consumeNextAutoplayTrack();
-        }
-        return false;
-    }
-    /**
-     * Handles the scenario when a track fails to play or load.
-     * Shifts the queue to the next track and emits a track end event.
-     * If there is no next track, handles the queue end scenario.
-     * If autoplay is enabled, plays the next track.
-     *
-     * @param {Player} player - The player instance associated with the track.
-     * @param {Track} track - The track that failed.
-     * @param {TrackEndEvent} payload - The event payload containing details about the track end.
-     * @returns {Promise<void>} A promise that resolves when the track failure has been processed.
-     * @private
-     */
-    async handleFailedTrack(player, track, payload) {
-        const retryAttempts = player.get("trackFailureAttempts") ?? 0;
-        const maxRetries = Math.max(0, this.manager.options.trackRetryAttempts ?? 2);
-        if (player.get("retryingTrack") === track?.track)
-            return;
-        if (track?.track && retryAttempts < maxRetries) {
-            player.set("trackFailureAttempts", retryAttempts + 1);
-            player.set("retryingTrack", track.track);
-            try {
-                await player.play(track);
-                this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Retrying failed track for ${player.guildId} (${retryAttempts + 1}/${maxRetries})`);
-                return;
-            }
-            catch (error) {
-                player.set("retryingTrack", null);
-                this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Track retry failed for ${player.guildId}: ${error.message}`);
-            }
-        }
+        const oldPlayer = { ...player };
+        player.playing = player.paused = false;
+        player.position = 0;
+        player.lastActivityAt = Date.now();
+        const message = player.nowPlayingMessage;
+        player.nowPlayingMessage = undefined;
+        if (message?.deletable) Promise.resolve().then(() => message.delete()).catch(() => { });
+
+        if (reason === reasons.LoadFailed && await this.retryTrack(player, track)) return;
+        if (player.destroyRequested || player.node !== this || player.queue.current !== track) return;
         player.set("trackFailureAttempts", 0);
-        player.set("retryingTrack", null);
-        player.queue.current = player.queue.shift();
-        if (!player.queue.current) {
-            const endPayload = player.isAutoplay
-                ? { ...payload, reason: Utils_1.TrackEndReasonTypes.Finished }
-                : payload;
-            await this.queueEnd(player, track, endPayload);
+        const history = player.queue.previous;
+        if (history.at(-1)?.track !== track.track) {
+            history.push(track);
+            if (history.length > this.manager.options.maxPreviousTracks) history.shift();
+        }
+        if (reason !== reasons.Finished || !player.trackRepeat) {
+            const next = player.queue.shift() ?? null;
+            if (reason === reasons.Finished && player.queueRepeat) {
+                if (next) player.queue.push(track);
+                player.queue.current = next ?? track;
+            } else {
+                player.queue.current = next;
+            }
+        }
+        player.playbackId = undefined;
+        this.manager.emit(Manager_1.ManagerEventTypes.TrackEnd, player, track, payload);
+        this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, player, {
+            changeType: Manager_1.PlayerStateEventTypes.TrackChange, details: { changeType: "end", track },
+        });
+        if (player.destroyRequested || player.playbackId || player.pendingOperations) return;
+        if (reason === reasons.Cleanup) return;
+        if (player.queue.current) {
+            if (this.manager.options.playNextOnEnd) await player.play();
             return;
         }
-        this.manager.emit(Manager_1.ManagerEventTypes.TrackEnd, player, track, payload);
-        if (this.manager.options.playNextOnEnd) {
-            if (player.queue.current) {
-                await player.play();
-            }
-            else {
-                await this.queueEnd(player, track, player.isAutoplay
-                    ? { ...payload, reason: Utils_1.TrackEndReasonTypes.Finished }
-                    : payload);
-            }
-        }
+        await this.queueEnd(player, track, payload);
     }
-    /**
-     * Handles the scenario when a track is repeated.
-     * Shifts the queue to the next track and emits a track end event.
-     * If there is no next track, handles the queue end scenario.
-     * If autoplay is enabled, plays the next track.
-     *
-     * @param {Player} player - The player instance associated with the track.
-     * @param {Track} track - The track that is repeated.
-     * @param {TrackEndEvent} payload - The event payload containing details about the track end.
-     * @returns {Promise<void>} A promise that resolves when the repeated track has been processed.
-     * @private
-     */
-    async handleRepeatedTrack(player, track, payload) {
-        const { queue, trackRepeat, queueRepeat } = player;
-        const { playNextOnEnd } = this.manager.options;
-        if (trackRepeat) {
-            // Prevent duplicate repeat insertion
-            if (queue[0] !== queue.current) {
-                queue.unshift(queue.current);
-            }
-        }
-        else if (queueRepeat) {
-            // Prevent duplicate queue insertion
-            if (queue[queue.length - 1] !== queue.current) {
-                queue.add(queue.current);
-            }
-        }
-        // Move to the next track
-        queue.current = queue.shift();
-        // Emit track end event
-        this.manager.emit(Manager_1.ManagerEventTypes.TrackEnd, player, track, payload);
-        // If the track was stopped manually and no more tracks exist, end the queue
-        if (payload.reason === Utils_1.TrackEndReasonTypes.Stopped && !(queue.current = queue.shift())) {
-            await this.queueEnd(player, track, payload);
-            return;
-        }
-        // If autoplay is enabled, play the next track
-        if (playNextOnEnd) {
-            if (queue.current) {
-                await player.play();
-            }
-            else {
-                await this.queueEnd(player, track, payload);
-            }
-        }
+
+    async retryTrack(player, track) {
+        const attempts = player.get("trackFailureAttempts") ?? 0;
+        if (attempts >= this.manager.options.trackRetryAttempts) return false;
+        player.set("trackFailureAttempts", attempts + 1);
+        try { await player.play(track); return true; }
+        catch (error) { this.error(error); return false; }
     }
-    /**
-     * Plays the next track in the queue.
-     * Updates the queue by shifting the current track to the previous track
-     * and plays the next track if autoplay is enabled.
-     *
-     * @param {Player} player - The player associated with the track.
-     * @param {Track} track - The track that has ended.
-     * @param {TrackEndEvent} payload - The event payload containing additional data about the track end event.
-     * @returns {void}
-     * @private
-     */
-    async playNextTrack(player, track, payload) {
-        // Shift the queue to set the next track as current
-        player.queue.current = player.queue.shift();
-        // Emit the track end event
-        this.manager.emit(Manager_1.ManagerEventTypes.TrackEnd, player, track, payload);
-        // If autoplay is enabled, play the next track
-        if (this.manager.options.playNextOnEnd) {
-            if (player.queue.current) {
-                await player.play();
-            }
-            else {
-                await this.queueEnd(player, track, payload);
-            }
-        }
-    }
-    /**
-     * Handles the event when a queue ends.
-     * If autoplay is enabled, attempts to play the next track in the queue using the autoplay logic.
-     * If all attempts fail, resets the player state and emits the `queueEnd` event.
-     * @param {Player} player - The player associated with the track.
-     * @param {Track} track - The track that has ended.
-     * @param {TrackEndEvent} payload - The event payload containing additional data about the track end event.
-     * @returns {Promise<void>} A promise that resolves when the queue end processing is complete.
-     */
+
     async queueEnd(player, track, payload) {
-        if (player.get("queueEndInProgress"))
-            return;
+        if (player.destroyRequested || player.queue.current || player.queue.length || player.get("queueEndInProgress")) return;
         player.set("queueEndInProgress", true);
-        player.queue.current = null;
-        if (!player.isAutoplay) {
-            player.clearAutoplayPool();
-            player.playing = false;
-            this.manager.emit(Manager_1.ManagerEventTypes.QueueEnd, player, track, payload);
-            return;
-        }
-        let attempt = 1;
-        let success = false;
-        while (attempt <= player.autoplayTries) {
-            success = await this.handleAutoplay(player, track, payload, attempt);
-            if (success) {
-                player.set("queueEndInProgress", false);
-                return;
+        try {
+            if (player.autoplayEnabled && (payload.reason === Utils_1.TrackEndReasonTypes.Finished ||
+                payload.reason === Utils_1.TrackEndReasonTypes.LoadFailed)) {
+                for (let attempt = 0; attempt < player.autoplayTries; attempt++) {
+                    if (player.destroyRequested || player.queue.current || player.queue.length || !player.autoplayEnabled) return;
+                    try {
+                        if (!player.isAutoplayTrack(track) || !player.autoplayPool.length) {
+                            await player.refreshAutoplayPool(track, player.autoplayPool.length > 0);
+                        }
+                        if (await player.consumeNextAutoplayTrack()) return;
+                    } catch (error) { this.error(error); }
+                }
             }
-            attempt++;
+            if (player.destroyRequested || player.queue.current || player.queue.length) return;
+            player.clearAutoplayPool();
+            this.manager.emit(Manager_1.ManagerEventTypes.QueueEnd, player, track, payload);
+        } finally {
+            player.set("queueEndInProgress", false);
         }
-        // If all attempts fail, reset the player state and emit queueEnd
-        player.clearAutoplayPool();
-        player.playing = false;
-        this.manager.emit(Manager_1.ManagerEventTypes.QueueEnd, player, track, payload);
     }
     /**
      * Fetches the lyrics of a track from the Lavalink node.
@@ -935,7 +525,7 @@ class Node {
      * @returns {Promise<Lyrics>} A promise that resolves with the lyrics data.
      */
     async getLyrics(track, skipTrackSource = false) {
-        if (!this.info.plugins.some((plugin) => plugin.name === "lavalyrics-plugin"))
+        if (!this.info?.plugins?.some((plugin) => plugin.name === "lavalyrics-plugin"))
             throw new RangeError(`there is no lavalyrics-plugin available in the lavalink node: ${this.options.identifier}`);
         // Make a GET request to the Lavalink node to fetch the lyrics
         // The request includes the track URL and the skipTrackSource parameter
@@ -958,71 +548,33 @@ class Node {
      * @protected
      */
     async trackStuck(player, track, payload) {
-        // Refresh the source before stop() advances/retries the same encoded
-        // track. This avoids repeated 10-second stuck loops for expired
-        // Spotify/Deezer stream URLs.
-        const recover = this.manager.options.trackErrorRecovery;
-        if (typeof recover === "function") {
-            try {
-                if (await recover(player, track, payload)) {
-                    this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Stuck track recovered for ${player.guildId}`);
-                    return;
-                }
-            }
-            catch (error) {
-                this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Stuck-track recovery failed for ${player.guildId}: ${error.message}`);
-            }
-        }
-        await player.stop();
+        if (await this.recoverTrack(player, track, payload)) return;
         this.manager.emit(Manager_1.ManagerEventTypes.TrackStuck, player, track, payload);
-        await this.handleFailedTrack(player, track, { ...payload, reason: Utils_1.TrackEndReasonTypes.LoadFailed });
+        if (!player.destroyRequested && player.queue.current === track) await player.stop();
     }
-    /**
-     * Handles the event when a track has an error during playback.
-     * Stops the current track and emits a `trackError` event.
-     *
-     * @param {Player} player - The player associated with the track that had an error.
-     * @param {Track} track - The track that had an error.
-     * @param {TrackExceptionEvent} payload - The event payload containing additional data about the track error event.
-     * @returns {void}
-     * @protected
-     */
+
     async trackError(player, track, payload) {
-        // Give consumers a chance to resolve a fresh track before the current
-        // encoded stream is stopped and the queue advances. This is essential
-        // for sources whose stream URL expires while playback is paused.
-        const recover = this.manager.options.trackErrorRecovery;
-        if (typeof recover === "function") {
-            try {
-                if (await recover(player, track, payload)) {
-                    this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Track error recovered for ${player.guildId}`);
-                    return;
-                }
-            }
-            catch (error) {
-                this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Track error recovery failed for ${player.guildId}: ${error.message}`);
-            }
-        }
-        await player.stop();
+        if (await this.recoverTrack(player, track, payload)) return;
         this.manager.emit(Manager_1.ManagerEventTypes.TrackError, player, track, payload);
-        await this.handleFailedTrack(player, track, { ...payload, reason: Utils_1.TrackEndReasonTypes.LoadFailed });
     }
-    /**
-     * Emitted when the WebSocket connection for a player closes.
-     * The payload of the event will contain the close code and reason if provided.
-     * @param {Player} player - The player associated with the WebSocket connection.
-     * @param {WebSocketClosedEvent} payload - The event payload containing additional data about the WebSocket close event.
-     */
+
+    async recoverTrack(player, track, payload) {
+        const recover = this.manager.options.trackErrorRecovery;
+        if (typeof recover !== "function") return false;
+        try { return !!(await recover(player, track, payload)); }
+        catch { this.error(new Error("Consumer track recovery failed.")); return false; }
+    }
+
     socketClosed(player, payload) {
         this.manager.emit(Manager_1.ManagerEventTypes.SocketClosed, player, payload);
-        this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Websocket closed for player: ${player.guildId} with payload: ${JSON.stringify(payload)}`);
-        if (!player.voiceChannelId || !player.queue.current)
-            return;
-        setTimeout(() => {
-            player.resyncState().catch((error) => {
-                this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Failed to re-sync player ${player.guildId} after websocket close: ${error}`);
-            });
+        if (!player.voiceChannelId || player.destroyRequested || player.voiceRecoveryTimer || player.voiceRecoveryAttempted) return;
+        player.voiceRecoveryAttempted = true;
+        player.voiceRecoveryTimer = setTimeout(() => {
+            player.voiceRecoveryTimer = undefined;
+            if (player.node !== this || !this.connected || player.destroyRequested) return;
+            player.resyncState().catch(error => this.error(error));
         }, 1500);
+        player.voiceRecoveryTimer.unref();
     }
     /**
      * Emitted when the segments for a track are loaded.
@@ -1078,9 +630,9 @@ class Node {
      * @throws {RangeError} If the sponsorblock-plugin is not available in the Lavalink node.
      */
     async getSponsorBlock(player) {
-        if (!this.info.plugins.some((plugin) => plugin.name === "sponsorblock-plugin"))
+        if (!this.info?.plugins?.some((plugin) => plugin.name === "sponsorblock-plugin"))
             throw new RangeError(`there is no sponsorblock-plugin available in the lavalink node: ${this.options.identifier}`);
-        return (await this.rest.get(`/v4/sessions/${this.sessionId}/players/${player.guildId}/sponsorblock/categories`));
+        return (await this.rest.get(this.rest.sessionPath(player.guildId) + "/sponsorblock/categories"));
     }
     /**
      * Sets the sponsorblock segments for a player.
@@ -1097,13 +649,13 @@ class Node {
      * ```
      */
     async setSponsorBlock(player, segments = [SponsorBlockSegment.Sponsor, SponsorBlockSegment.SelfPromo]) {
-        if (!this.info.plugins.some((plugin) => plugin.name === "sponsorblock-plugin"))
+        if (!this.info?.plugins?.some((plugin) => plugin.name === "sponsorblock-plugin"))
             throw new RangeError(`there is no sponsorblock-plugin available in the lavalink node: ${this.options.identifier}`);
         if (!segments.length)
             throw new RangeError("No Segments provided. Did you mean to use 'deleteSponsorBlock'?");
         if (segments.some((v) => !validSponsorBlocks.includes(v.toLowerCase())))
             throw new SyntaxError(`You provided a sponsorblock which isn't valid, valid ones are: ${validSponsorBlocks.map((v) => `'${v}'`).join(", ")}`);
-        await this.rest.put(`/v4/sessions/${this.sessionId}/players/${player.guildId}/sponsorblock/categories`, JSON.stringify(segments.map((v) => v.toLowerCase())));
+        await this.rest.put(this.rest.sessionPath(player.guildId) + "/sponsorblock/categories", JSON.stringify(segments.map((v) => v.toLowerCase())));
         return;
     }
     /**
@@ -1113,24 +665,10 @@ class Node {
      * @throws {RangeError} If the sponsorblock-plugin is not available in the Lavalink node.
      */
     async deleteSponsorBlock(player) {
-        if (!this.info.plugins.some((plugin) => plugin.name === "sponsorblock-plugin"))
+        if (!this.info?.plugins?.some((plugin) => plugin.name === "sponsorblock-plugin"))
             throw new RangeError(`there is no sponsorblock-plugin available in the lavalink node: ${this.options.identifier}`);
-        await this.rest.delete(`/v4/sessions/${this.sessionId}/players/${player.guildId}/sponsorblock/categories`);
+        await this.rest.delete(this.rest.sessionPath(player.guildId) + "/sponsorblock/categories");
         return;
-    }
-    /**
-     * Creates a README.md or README.txt file in the session data directory
-     * if it doesn't already exist. This file is used to store player data
-     * for autoresume and other features.
-     * @private
-     */
-    createReadmeFile() {
-        const readmeFilePath = path_1.default.join(require("../utils/sessionData").dataRoot, "README.md");
-        const message = "Please do NOT delete this Pulsify data folder; it stores player data for session recovery.";
-        if (!fs_1.default.existsSync(readmeFilePath)) {
-            fs_1.default.writeFileSync(readmeFilePath, message, "utf-8");
-            this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[NODE] Created README file at: ${readmeFilePath}`);
-        }
     }
 }
 exports.Node = Node;

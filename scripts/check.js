@@ -5,7 +5,7 @@ function check(directory) {
   for (const item of fs.readdirSync(directory, { withFileTypes: true })) {
     const file = path.join(directory, item.name);
     if (item.isDirectory()) check(file);
-    else if (file.endsWith(".js")) execFileSync(process.execPath, ["--check", file], { stdio: "inherit" });
+    else if (/\.[cm]?js$/.test(file)) execFileSync(process.execPath, ["--check", file], { stdio: "inherit" });
   }
 }
 for (const directory of ["dist", "scripts", "test", "examples"]) {

@@ -1,196 +1,154 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.Rest = void 0;
-const tslib_1 = require("tslib");
-const axios_1 = tslib_1.__importDefault(require("axios"));
+const axios = require("axios");
 const Manager_1 = require("./Manager");
-/** Handles the requests sent to the Lavalink REST API. */
-class Rest {
-    /** The Node that this Rest instance is connected to. */
-    node;
-    /** The ID of the current session. */
-    sessionId;
-    /** The password for the Node. */
-    password;
-    /** The URL of the Node. */
-    url;
-    /** The Manager instance. */
-    manager;
-    constructor(node, manager) {
-        this.node = node;
-        this.url = `http${node.options.useSSL ? "s" : ""}://${node.options.host}:${node.options.port}`;
-        this.password = node.options.password;
-        this.manager = manager;
-    }
-    /**
-     * Sets the session ID.
-     * This method is used to set the session ID after a resume operation is done.
-     * @param {string} sessionId The session ID to set.
-     * @returns {string} Returns the set session ID.
-     */
-    setSessionId(sessionId) {
-        this.sessionId = sessionId;
-        return this.sessionId;
-    }
-    /**
-     * Retrieves all the players that are currently running on the node.
-     * @returns {Promise<unknown>} Returns the result of the GET request.
-     */
-    async getAllPlayers() {
-        // Send a GET request to the Lavalink Node to retrieve all the players.
-        const result = await this.get(`/v4/sessions/${this.node.sessionId}/players`);
-        // Log the result of the request.
-        this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[REST] Getting all players on node: ${this.node.options.identifier} : ${JSON.stringify(result)}`);
-        // Return the result of the request.
-        return result;
-    }
-    /**
-     * Sends a PATCH request to update player related data.
-     * @param {playOptions} options The options to update the player with.
-     * @returns {Promise<unknown>} Returns the result of the PATCH request.
-     */
-    async updatePlayer(options) {
-        // Log the request.
-        if (!this.node.sessionId) return;
-        this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[REST] Updating player: ${options.guildId}: ${JSON.stringify(options)}`);
-        const data = options?.data && typeof options.data === "object" ? { ...options.data } : options.data;
-        const noReplace = typeof options?.noReplace === "boolean"
-            ? options.noReplace
-            : typeof data?.noReplace === "boolean"
-                ? data.noReplace
-                : false;
-        if (data && typeof data === "object" && "noReplace" in data) {
-            delete data.noReplace;
-        }
-        // Send the PATCH request.
-        return await this.patch(`/v4/sessions/${this.node.sessionId}/players/${options.guildId}?noReplace=${noReplace}`, data);
-    }
-    /**
-     * Sends a DELETE request to the server to destroy the player.
-     * @param {string} guildId The guild ID of the player to destroy.
-     * @returns {Promise<unknown>} Returns the result of the DELETE request.
-     */
-    async destroyPlayer(guildId) {
-        // Log the request.
-        this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[REST] Destroying player: ${guildId}`);
-        // Send the DELETE request.
-        return await this.delete(`/v4/sessions/${this.node.sessionId}/players/${guildId}`);
-    }
-    /**
-     * Updates the session status for resuming.
-     * This method sends a PATCH request to update the session's resuming status and timeout.
-     *
-     * @param {boolean} resuming - Indicates whether the session should be set to resuming.
-     * @param {number} timeout - The timeout duration for the session resume.
-     * @returns {Promise<unknown>} The result of the PATCH request.
-     */
-    async updateSession(resuming, timeout) {
-        // Emit a debug event with information about the session being updated
-        this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[REST] Updating session: ${this.node.sessionId}`);
-        // Send a PATCH request to update the session with the provided resuming status and timeout
-        return await this.patch(`/v4/sessions/${this.node.sessionId}`, { resuming, timeout });
-    }
-    /**
-     * Sends a request to the specified endpoint and returns the response data.
-     * @param {string} method The HTTP method to use for the request.
-     * @param {string} endpoint The endpoint to send the request to.
-     * @param {unknown} [body] The data to send in the request body.
-     * @returns {Promise<unknown>} The response data of the request.
-     */
-    async request(method, endpoint, body) {
-        this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[REST] ${method} api call for endpoint: ${endpoint} with data: ${JSON.stringify(body)}`);
-        const cacheable = method === "GET" && endpoint.startsWith("/v4/loadtracks?");
-        const cacheKey = cacheable ? `${this.node.options.identifier}:${endpoint}` : null;
-        if (cacheKey) {
-            const cached = this.manager.trackCache.get(cacheKey);
-            if (cached && cached.expiresAt > Date.now())
-                return cached.value;
-            if (cached)
-                this.manager.trackCache.delete(cacheKey);
-        }
-        const config = {
-            method,
-            url: this.url + endpoint,
-            headers: {
-                "Content-Type": "application/json",
-                Authorization: this.password,
-            },
-            timeout: this.node.options.apiRequestTimeoutMs,
-            data: body,
-        };
-        try {
-            const response = await (0, axios_1.default)(config);
-            if (cacheKey && response.data && response.data.loadType !== "error") {
-                const ttl = Math.max(0, this.manager.options.trackCacheTtlMs ?? 300000);
-                this.manager.trackCache.set(cacheKey, { value: response.data, expiresAt: Date.now() + ttl });
-            }
-            return response.data;
-        }
-        catch (error) {
-            if (!error.response) {
-                console.error("No response from node:", error.message);
-                return null;
-            }
-            const message = error.response.data?.message;
-            if (message === "Guild not found" || message === "Player not found") {
-                return [];
-            }
-            else if (error.response.status === 404 && /\/v4\/sessions\/[^/]+(?:$|\/)/.test(endpoint) && message !== "Player not found") {
-                this.node.sessionId = null;
-                this.node.socket?.removeAllListeners();
-                this.node.socket?.close(1000, "session-invalid");
-                this.node.socket = null;
-                await this.node.reconnect();
-            }
-            return null;
-        }
-    }
-    /**
-     * Sends a GET request to the specified endpoint and returns the response data.
-     * @param {string} endpoint The endpoint to send the GET request to.
-     * @returns {Promise<unknown>} The response data of the GET request.
-     */
-    async get(endpoint) {
-        // Send a GET request to the specified endpoint and return the response data.
-        return await this.request("GET", endpoint);
-    }
-    /**
-     * Sends a PATCH request to the specified endpoint and returns the response data.
-     * @param {string} endpoint The endpoint to send the PATCH request to.
-     * @param {unknown} body The data to send in the request body.
-     * @returns {Promise<unknown>} The response data of the PATCH request.
-     */
-    async patch(endpoint, body) {
-        // Send a PATCH request to the specified endpoint and return the response data.
-        return await this.request("PATCH", endpoint, body);
-    }
-    /**
-     * Sends a POST request to the specified endpoint and returns the response data.
-     * @param {string} endpoint The endpoint to send the POST request to.
-     * @param {unknown} body The data to send in the request body.
-     * @returns {Promise<unknown>} The response data of the POST request.
-     */
-    async post(endpoint, body) {
-        return await this.request("POST", endpoint, body);
-    }
-    /**
-     * Sends a PUT request to the specified endpoint and returns the response data.
-     * @param {string} endpoint The endpoint to send the PUT request to.
-     * @param {unknown} body The data to send in the request body.
-     * @returns {Promise<unknown>} The response data of the PUT request.
-     */
-    async put(endpoint, body) {
-        // Send a PUT request to the specified endpoint and return the response data.
-        return await this.request("PUT", endpoint, body);
-    }
-    /**
-     * Sends a DELETE request to the specified endpoint.
-     * @param {string} endpoint - The endpoint to send the DELETE request to.
-     * @returns {Promise<unknown>} The response data of the DELETE request.
-     */
-    async delete(endpoint) {
-        // Send a DELETE request using the request method and return the response data.
-        return await this.request("DELETE", endpoint);
+
+const MAX_CONTENT_BYTES = 8 * 1024 * 1024;
+
+class LavalinkRequestError extends Error {
+    constructor(method, status) {
+        super(status ? `Lavalink ${method} failed (HTTP ${status}).` : `Lavalink ${method} failed or returned an invalid response.`);
+        this.name = "LavalinkRequestError";
+        this.status = status;
     }
 }
+
+class Rest {
+    #password;
+    #pendingLoads = new Map();
+    #activeRequests = 0;
+
+    constructor(node, manager) {
+        this.node = node;
+        this.manager = manager;
+        this.url = new URL((node.options.useSSL ? "https://" : "http://") + node.address).origin;
+        this.#password = node.options.password;
+    }
+
+    setSessionId(sessionId) {
+        this.sessionId = sessionId;
+        return sessionId;
+    }
+
+    sessionPath(guildId) {
+        const sessionId = this.node.sessionId;
+        if (!sessionId) throw new Error("Lavalink session is not ready.");
+        const base = `/v4/sessions/${encodeURIComponent(sessionId)}`;
+        if (guildId === undefined) return base;
+        if (typeof guildId !== "string" || !/^\d+$/.test(guildId)) throw new TypeError("Invalid Discord guild ID.");
+        return `${base}/players/${guildId}`;
+    }
+
+    async getAllPlayers() {
+        return this.get(`${this.sessionPath()}/players`);
+    }
+
+    async updatePlayer(options) {
+        const { noReplace: legacyNoReplace, encodedTrack, identifier, startTime, ...data } = options.data;
+        if (encodedTrack !== undefined && !Object.hasOwn(data, "track")) {
+            data.track = { encoded: encodedTrack };
+        } else if (identifier !== undefined && !Object.hasOwn(data, "track")) {
+            data.track = { identifier };
+        }
+        if (startTime !== undefined && data.position === undefined) data.position = startTime;
+        const noReplace = options.noReplace ?? legacyNoReplace ?? false;
+        if (typeof noReplace !== "boolean") throw new TypeError("noReplace must be a boolean.");
+        const response = await this.patch(this.sessionPath(options.guildId) + "?noReplace=" + noReplace, data);
+        if (!response || response.guildId !== options.guildId || !Object.hasOwn(response, "track")) {
+            throw new LavalinkRequestError("PATCH");
+        }
+        return response;
+    }
+
+    async destroyPlayer(guildId) {
+        if (!this.node.sessionId) return;
+        try {
+            await this.delete(this.sessionPath(guildId));
+        } catch (error) {
+            if (error.status !== 404) throw error;
+        }
+    }
+
+    async updateSession(resuming, timeout) {
+        return this.patch(this.sessionPath(), { resuming, timeout });
+    }
+
+    async request(method, endpoint, body) {
+        if (typeof endpoint !== "string" || !/^\/(?!\/)/.test(endpoint) || /[\\\x00-\x20]/.test(endpoint)) {
+            throw new TypeError("Lavalink endpoints must be relative paths on the configured node.");
+        }
+        const target = new URL(endpoint, this.url);
+        if (target.origin !== this.url || target.hash) throw new TypeError("Invalid Lavalink endpoint.");
+        const cache = this.manager.trackCache;
+        const ttl = this.manager.options.trackCacheTtlMs;
+        const limit = this.manager.options.trackCacheMaxEntries;
+        if (method !== "GET" || target.pathname !== "/v4/loadtracks" || !ttl || !limit) {
+            return this.send(method, target, body);
+        }
+        const key = JSON.stringify([this.node.options.identifier, target.search]);
+        const cached = cache.get(key);
+        if (cached) {
+            cache.delete(key);
+            if (cached.expiresAt > Date.now()) {
+                cache.set(key, cached);
+                return structuredClone(cached.value);
+            }
+        }
+        let pending = this.#pendingLoads.get(key);
+        if (!pending) {
+            if (this.#pendingLoads.size >= limit) throw new Error("Too many pending Lavalink track loads.");
+            pending = this.send(method, target, body).then(value => {
+                const cacheable = value?.loadType === "empty" ||
+                    (value?.loadType === "track" && typeof value.data?.encoded === "string") ||
+                    (value?.loadType === "search" && Array.isArray(value.data) && value.data.length <= 100);
+                if (!this.node.destroyed && cacheable && target.search.length < 8192 && JSON.stringify(value).length <= 131072) {
+                    while (cache.size >= limit) cache.delete(cache.keys().next().value);
+                    cache.set(key, { value, expiresAt: Date.now() + ttl });
+                }
+                return value;
+            }).finally(() => this.#pendingLoads.delete(key));
+            this.#pendingLoads.set(key, pending);
+        }
+        return structuredClone(await pending);
+    }
+
+    async send(method, target, body) {
+        if (this.#activeRequests >= 256) throw new Error("Too many pending Lavalink requests on this node.");
+        this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[REST] ${method} on node ${this.node.options.identifier}`);
+        this.#activeRequests++;
+        try {
+            const response = await axios({
+                method,
+                url: target.href,
+                headers: { "Content-Type": "application/json", Authorization: this.#password },
+                data: body,
+                timeout: this.node.options.apiRequestTimeoutMs,
+                maxRedirects: 0,
+                maxContentLength: MAX_CONTENT_BYTES,
+                maxBodyLength: MAX_CONTENT_BYTES,
+                proxy: false,
+                responseType: "json",
+                transitional: { silentJSONParsing: false },
+                signal: AbortSignal.timeout(this.node.options.apiRequestTimeoutMs),
+            });
+            return response.status === 204 ? null : response.data;
+        } catch (error) {
+            // Axios errors retain the authorization header, request body and response.
+            const status = error.response?.status;
+            if (status === 404 && error.response?.data?.message === "Session not found") {
+                const match = /^\/v4\/sessions\/([^/]+)/.exec(target.pathname);
+                if (match) this.node.invalidateSession(match[1]);
+            }
+            throw new LavalinkRequestError(method, status >= 300 ? status : undefined);
+        } finally {
+            this.#activeRequests--;
+        }
+    }
+
+    get(endpoint) { return this.request("GET", endpoint); }
+    patch(endpoint, body) { return this.request("PATCH", endpoint, body); }
+    post(endpoint, body) { return this.request("POST", endpoint, body); }
+    put(endpoint, body) { return this.request("PUT", endpoint, body); }
+    delete(endpoint) { return this.request("DELETE", endpoint); }
+}
+
 exports.Rest = Rest;

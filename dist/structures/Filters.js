@@ -2,6 +2,11 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AvailableFilters = exports.Filters = void 0;
 const filtersEqualizers_1 = require("../utils/filtersEqualizers");
+const filterProperties = new Set([
+    "distortion", "equalizer", "karaoke", "rotation", "timescale", "vibrato", "tremoloOptions",
+    "channelMix", "lowPass", "reverb", "volume", "bassBoostlevel",
+]);
+
 class Filters {
     distortion;
     equalizer;
@@ -49,26 +54,30 @@ class Filters {
      * @returns {Promise<this>} - Returns a promise that resolves to the current instance
      * of the Filters class for method chaining.
      */
-    async updateFilters() {
+    payload() {
         const { distortion, equalizer, karaoke, rotation, timescale, vibrato, tremoloOptions, channelMix, lowPass, reverb, volume } = this;
-        await this.player.node.rest.updatePlayer({
-            data: {
-                filters: {
-                    distortion,
-                    equalizer,
-                    karaoke,
-                    rotation,
-                    timescale,
-                    vibrato,
-                    tremolo: tremoloOptions,
-                    channelMix,
-                    lowPass,
-                    reverb,
-                    volume,
-                },
-            },
-            guildId: this.player.guildId,
-        });
+        return { distortion, equalizer, karaoke, rotation, timescale, vibrato, tremolo: tremoloOptions, channelMix, lowPass, reverb, volume };
+    }
+
+    snapshot() {
+        const { tremolo, ...filters } = this.payload();
+        return structuredClone({ ...filters, tremoloOptions: tremolo, bassBoostlevel: this.bassBoostlevel, filterStatus: this.filtersStatus });
+    }
+
+    restore(snapshot) {
+        for (const key of filterProperties) {
+            if (Object.hasOwn(snapshot, key)) this[key] = structuredClone(snapshot[key]);
+        }
+        for (const key of Object.values(AvailableFilters)) {
+            if (typeof snapshot.filterStatus?.[key] === "boolean") this.filtersStatus[key] = snapshot.filterStatus[key];
+        }
+    }
+
+    async updateFilters() {
+        const filters = structuredClone(this.payload());
+        await this.player.runOperation(() => this.player.node.rest.updatePlayer({
+            data: { filters }, guildId: this.player.guildId,
+        }));
         return this;
     }
     /**
@@ -82,6 +91,7 @@ class Filters {
      * @returns {Promise<this>} - Returns the current instance of the Filters class for method chaining.
      */
     async applyFilter(filter, updateFilters = true) {
+        if (!filterProperties.has(filter.property)) throw new TypeError("Unknown audio filter property.");
         this[filter.property] = filter.value;
         if (updateFilters) {
             await this.updateFilters();
@@ -89,7 +99,11 @@ class Filters {
         return this;
     }
     async applyFilters(filters, updateFilters = true) {
-        Object.assign(this, filters);
+        const entries = Object.entries(filters);
+        for (const [key] of entries) {
+            if (!filterProperties.has(key)) throw new TypeError("Unknown audio filter property.");
+        }
+        for (const [key, value] of entries) this[key] = value;
         if (updateFilters) {
             await this.updateFilters();
         }
@@ -106,6 +120,7 @@ class Filters {
      * @returns {this} - Returns the current instance of the Filters class for method chaining.
      */
     setFilterStatus(filter, status) {
+        if (!Object.hasOwn(this.filtersStatus, filter) || typeof status !== "boolean") throw new TypeError("Invalid audio filter status.");
         this.filtersStatus[filter] = status;
         return this;
     }

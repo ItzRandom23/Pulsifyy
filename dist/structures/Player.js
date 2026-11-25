@@ -7,7 +7,8 @@ const Manager_1 = require("./Manager");
 const Node_1 = require("./Node");
 const Queue_1 = require("./Queue");
 const Utils_1 = require("./Utils");
-const _ = tslib_1.__importStar(require("lodash"));
+const { randomUUID } = require("node:crypto");
+const { inspect } = require("node:util");
 const playerCheck_1 = tslib_1.__importDefault(require("../utils/playerCheck"));
 class Player {
     options;
@@ -58,7 +59,10 @@ class Player {
     autoplayRecommendationAt = 0;
     /** Last time this player had user/playback activity. */
     lastActivityAt = Date.now();
-    inactivityTimer = null;
+    operationQueue = Promise.resolve();
+    pendingOperations = 0;
+    playbackId;
+    destroyTask;
     /** Serializes Lavalink events for this player. */
     eventQueue = Promise.resolve();
     destroyRequested = false;
@@ -68,8 +72,8 @@ class Player {
     lastAutoplaySeedTrackId = null;
     /** The last user-requested track identifier seen by the player. */
     lastUserRequestedTrackId = null;
-    static _manager;
-    data = {};
+    static managerRef;
+    data = Object.create(null);
     dynamicLoopInterval = null;
     dynamicRepeatIntervalMs = null;
     /**
@@ -77,11 +81,10 @@ class Player {
      * @param options The player options.
      * @see https://docs.magmastream.com/main/introduction/getting-started
      */
-    constructor(options) {
-        this.options = options;
-        // If the Manager is not initiated, throw an error.
-        if (!this.manager)
-            this.manager = Utils_1.Structure.get("Player")._manager;
+    constructor(options, manager = Utils_1.Structure.constructingManager ?? new.target.managerRef?.deref()) {
+        this.manager = manager;
+        (0, playerCheck_1.default)(options);
+        this.options = { ...options };
         if (!this.manager)
             throw new RangeError("Manager has not been initiated.");
         // If a player with the same guild ID already exists, return it.
@@ -89,12 +92,10 @@ class Player {
             return this.manager.players.get(options.guildId);
         }
         // Check the player options for errors.
-        (0, playerCheck_1.default)(options);
         // Set the guild ID and voice state.
         this.guildId = options.guildId;
-        this.voiceState = Object.assign({
-            op: "voiceUpdate",
-            guild_id: options.guildId,
+        Object.defineProperty(this, "voiceState", {
+            value: { op: "voiceUpdate", guild_id: options.guildId },
         });
         // Set the voice and text channels if they exist.
         if (options.voiceChannelId)
@@ -103,6 +104,7 @@ class Player {
             this.textChannelId = options.textChannelId;
         // Set the node to use, either the specified node or the first available node.
         const node = this.manager.nodes.get(options.node);
+        if (options.node && !node) throw new RangeError("Unknown Lavalink node.");
         this.node = node || this.manager.useableNode;
         // If no node is available, throw an error.
         if (!this.node)
@@ -112,14 +114,8 @@ class Player {
         this.queue.previous = new Array();
         // Add the player to the manager's player collection.
         this.manager.players.set(options.guildId, this);
-        this.inactivityTimer = setInterval(() => {
-            const timeout = this.manager.options.playerInactivityTimeoutMs;
-            if (timeout > 0 && this.voiceChannelId && !this.playing && !this.queue.current && Date.now() - this.lastActivityAt >= timeout) {
-                this.manager.log("info", `[PLAYER] Destroying inactive player ${this.guildId}`);
-                this.destroy().catch((error) => this.manager.log("error", `[PLAYER] Failed to destroy inactive player ${this.guildId}: ${error.message}`));
-            }
-        }, Math.min(Math.max(10000, (this.manager.options.playerInactivityTimeoutMs || 300000) / 2), 60000));
-        this.inactivityTimer.unref?.();
+        this.node.localPlayers = (this.node.localPlayers ?? 0) + 1;
+        this.manager.watchInactivePlayers();
         // Set the initial volume locally. A REST sync can happen later once session is ready.
         this.volume = options.volume ?? 100;
         // Initialize the filters.
@@ -127,6 +123,22 @@ class Player {
         // Emit the playerCreate event.
         this.manager.emit(Manager_1.ManagerEventTypes.PlayerCreate, this);
     }
+    [inspect.custom]() {
+        return { guildId: this.guildId, node: this.node.options.identifier, playing: this.playing, queued: this.queue.length };
+    }
+
+    runOperation(operation) {
+        if (this.destroyRequested) return Promise.reject(new Error("Player has been destroyed."));
+        if (this.pendingOperations >= 128) return Promise.reject(new Error("Too many pending player operations."));
+        this.pendingOperations++;
+        const result = this.operationQueue.then(() => {
+            if (this.destroyRequested) throw new Error("Player has been destroyed.");
+            return operation();
+        });
+        this.operationQueue = result.then(() => { this.pendingOperations--; }, () => { this.pendingOperations--; });
+        return result;
+    }
+
     /**
      * Set custom data.
      * @param key - The key to set the data for.
@@ -153,7 +165,7 @@ class Player {
      */
     static init(manager) {
         // Set the Manager to use.
-        this._manager = manager;
+        this.managerRef = new WeakRef(manager);
     }
 
     /**
@@ -170,14 +182,15 @@ class Player {
      * @throws {RangeError} If no voice channel has been set.
      * @returns {void}
      */
-    connect() {
+    connect(force = false) {
+        if (this.destroyRequested) throw new Error("Player has been destroyed.");
+        if (!force && this.state === Utils_1.StateTypes.Connected && this.requestedVoiceChannel === this.voiceChannelId) return;
         this.lastActivityAt = Date.now();
         // Check if the voice channel has been set.
         if (!this.voiceChannelId) {
             throw new RangeError("No voice channel has been set. You must use the `setVoiceChannelId()` method to set the voice channel before connecting.");
         }
         // Set the player state to connecting.
-        this.state = Utils_1.StateTypes.Connecting;
         // Clone the current player state for comparison.
         const oldPlayer = this ? { ...this } : null;
         // Send the voice state update to the gateway.
@@ -191,6 +204,7 @@ class Player {
             },
         });
         // Set the player state to connected.
+        this.requestedVoiceChannel = this.voiceChannelId;
         this.state = Utils_1.StateTypes.Connected;
         // Emit the player state update event.
         this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, this, {
@@ -208,129 +222,67 @@ class Player {
      * @returns {this} - The current instance of the Player class for method chaining.
      */
     async disconnect() {
-        // Set the player state to disconnecting.
-        this.state = Utils_1.StateTypes.Disconnecting;
-        // Clone the current player state for comparison.
-        const oldPlayer = this ? { ...this } : null;
-        // Pause the player.
-        await this.pause(true);
-        // Send the voice state update to the gateway.
-        this.manager.options.send(this.guildId, {
-            op: 4,
-            d: {
-                guild_id: this.guildId,
-                channel_id: null,
-                self_mute: false,
-                self_deaf: false,
-            },
-        });
-        // Set the player voice channel to null.
-        this.voiceChannelId = null;
-        // Set the player state to disconnected.
-        this.state = Utils_1.StateTypes.Disconnected;
-        // Emit the player state update event.
-        this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, this, {
-            changeType: Manager_1.PlayerStateEventTypes.ConnectionChange,
-            details: {
-                changeType: "disconnect",
-                previousConnection: oldPlayer.state === Utils_1.StateTypes.Connected,
-                currentConnection: false,
-            },
-        });
+        if (!this.destroyRequested && this.voiceChannelId) {
+            const oldPlayer = { ...this };
+            await this.destroy();
+            this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, this, {
+                changeType: Manager_1.PlayerStateEventTypes.ConnectionChange,
+                details: { changeType: "disconnect", previousConnection: true, currentConnection: false },
+            });
+        }
         return this;
     }
-    /**
-     * Destroys the player and clears the queue.
-     * @param {boolean} disconnect - Whether to disconnect the player from the voice channel.
-     * @returns {Promise<boolean>} - Whether the player was successfully destroyed.
-     * @emits {PlayerDestroy} - Emitted when the player is destroyed.
-     * @emits {PlayerStateUpdate} - Emitted when the player state is updated.
-     */
-    async destroy(disconnect = true) {
-        // Guard on state instead of the destroyRequested latch: a destroy that
-        // hung or threw midway used to latch destroyRequested forever, leaving
-        // a ghost player that rejected every future destroy and made the bot
-        // refuse to join ("already connected to <#null>").
-        if (this.state === Utils_1.StateTypes.Destroying || (this.state === Utils_1.StateTypes.Disconnected && !this.manager.players.has(this.guildId)))
-            return false;
+
+    leaveVoice() {
+        this.manager.options.send(this.guildId, {
+            op: 4, d: { guild_id: this.guildId, channel_id: null, self_mute: false, self_deaf: false },
+        });
+        this.requestedVoiceChannel = null;
+        this.voiceChannelId = null;
+    }
+
+    destroy(disconnect = true, preserveSession = false) {
+        if (this.destroyTask) return this.destroyTask;
         this.destroyRequested = true;
+        const oldPlayer = { ...this };
         this.state = Utils_1.StateTypes.Destroying;
-        // A stuck event chain must never block destruction; it times out.
-        await Promise.race([
-            this.eventQueue.catch(() => { }),
-            new Promise((resolve) => {
-                const timer = setTimeout(resolve, 5000);
-                timer.unref?.();
-            }),
-        ]);
-        const oldPlayer = this ? { ...this } : null;
-        try {
-            if (this.inactivityTimer) {
-                clearInterval(this.inactivityTimer);
-                this.inactivityTimer = null;
+        clearInterval(this.dynamicLoopInterval);
+        clearTimeout(this.voiceRecoveryTimer);
+        this.destroyTask = this.operationQueue.then(async () => {
+            const failures = [];
+            if (!preserveSession) {
+                if (disconnect && this.voiceChannelId) {
+                    try { this.leaveVoice(); } catch (error) { failures.push(error); }
+                }
+                try { await this.node.rest.destroyPlayer(this.guildId); } catch (error) { failures.push(error); }
+                try { await this.manager.removePlayerState(this.guildId); } catch (error) { failures.push(error); }
             }
-
-            if (disconnect) {
-                await this.pause(true).catch(() => { });
-                await this.disconnect().catch(() => { });
-            }
-
-            // Stop any intervals or loops
-            if (this.dynamicLoopInterval) {
-                clearInterval(this.dynamicLoopInterval);
-                this.dynamicLoopInterval = null;
-            }
-
-            if (this.isAutoplay) {
-                this.isAutoplay = false;
-            }
-            this.autoplayEnabled = false;
-            this.clearAutoplayPool();
-
-            // Clear filters, queue, data
-            await this.node.rest.destroyPlayer(this.guildId).catch(() => { });
-            this.queue.clear();
-            this.filters = null;
+            this.queue.length = 0;
             this.queue.current = null;
             this.queue.previous = [];
-
-            // Emit events
-            this.manager.emit(
-                Manager_1.ManagerEventTypes.PlayerStateUpdate,
-                oldPlayer,
-                null,
-                {
-                    changeType: Manager_1.PlayerStateEventTypes.PlayerDestroy,
-                }
-            );
-
-            this.manager.emit(Manager_1.ManagerEventTypes.PlayerDestroy, this);
-
-            // Safe delete
-            let deleted = false;
-            if (this.manager.players.has(this.guildId)) {
-                deleted = this.manager.players.delete(this.guildId);
-                if (!deleted) {
-                    console.warn(
-                        `[Player] Deletion failed despite existence in map for guild: ${this.guildId}`
-                    );
-                }
+            this.clearAutoplayPool();
+            this.autoplayEnabled = this.isAutoplay = false;
+            this.playing = this.paused = false;
+            this.voiceChannelId = null;
+            delete this.voiceState.event;
+            delete this.voiceState.sent;
+            delete this.voiceState.sessionId;
+            delete this.voiceState.channelId;
+            this.state = Utils_1.StateTypes.Disconnected;
+            const registered = this.manager.players.get(this.guildId) === this;
+            if (registered) {
+                this.node.localPlayers--;
+                this.manager.players.delete(this.guildId);
             }
-
-            return deleted;
-        }
-        catch (error) {
-            this.manager.log?.("error", `[PLAYER] Destroy failed for guild ${this.guildId}: ${error?.message ?? error}`);
-            return false;
-        }
-        finally {
-            // Whether destroy completed, failed, or timed out on the event
-            // queue, the player must leave the map so a fresh player can be
-            // created for the guild.
-            this.manager.players.delete(this.guildId);
-            this.manager.voiceUpdateDedupCache?.delete(this.guildId);
-            this.destroyRequested = false;
-        }
+            this.manager.stopWatchingIdlePlayers();
+            this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, null, {
+                changeType: Manager_1.PlayerStateEventTypes.PlayerDestroy,
+            });
+            this.manager.emit(Manager_1.ManagerEventTypes.PlayerDestroy, this);
+            if (failures.length) throw new AggregateError(failures, "Pulsify could not finish all player cleanup.");
+            return registered;
+        });
+        return this.destroyTask;
     }
     /**
      * Sets the player voice channel.
@@ -340,8 +292,8 @@ class Player {
      */
     setVoiceChannelId(channel) {
         // Validate the channel parameter
-        if (typeof channel !== "string")
-            throw new TypeError("Channel must be a non-empty string.");
+        if (typeof channel !== "string" || !/^\d+$/.test(channel))
+            throw new TypeError("Channel must be a Discord ID string.");
         // Clone the current player state for comparison
         const oldPlayer = this ? { ...this } : null;
         // Update the player voice channel
@@ -370,8 +322,8 @@ class Player {
      */
     setTextChannelId(channel) {
         // Validate the channel parameter
-        if (typeof channel !== "string")
-            throw new TypeError("Channel must be a non-empty string.");
+        if (typeof channel !== "string" || !/^\d+$/.test(channel))
+            throw new TypeError("Channel must be a Discord ID string.");
         // Clone the current player state for comparison
         const oldPlayer = this ? { ...this } : null;
         // Update the text channel property
@@ -402,45 +354,37 @@ class Player {
         return this.nowPlayingMessage;
     }
     async play(optionsOrTrack, playOptions) {
-        this.lastActivityAt = Date.now();
-        this.set("queueEndInProgress", false);
-        if (typeof optionsOrTrack !== "undefined" && Utils_1.TrackUtils.validate(optionsOrTrack)) {
-            const previousTrackKey = this.queue.current?.track;
-            const nextTrackKey = optionsOrTrack.track;
-            if (previousTrackKey && nextTrackKey && previousTrackKey !== nextTrackKey) {
-                const now = Date.now();
-                const stored = this.get("Internal_SupersededTrackEnds");
-                const active = Array.isArray(stored)
-                    ? stored.filter((entry) => entry?.track && Number(entry.until) > now && entry.track !== previousTrackKey)
-                    : [];
-                active.push({ track: previousTrackKey, until: now + 60000 });
-                this.set("Internal_SupersededTrackEnds", active);
-            }
-            this.queue.current = optionsOrTrack;
-            if (!this.isAutoplayTrack(optionsOrTrack)) {
-                this.lastUserRequestedTrackId = optionsOrTrack.identifier ?? null;
-            }
+        return this.runOperation(() => this.playTrack(optionsOrTrack, playOptions));
+    }
+
+    async playTrack(optionsOrTrack, playOptions) {
+        const explicitTrack = !Array.isArray(optionsOrTrack) && Utils_1.TrackUtils.validate(optionsOrTrack);
+        const track = explicitTrack ? optionsOrTrack : this.queue.current;
+        if (!Utils_1.TrackUtils.validate(track)) throw new RangeError("No current track.");
+        const options = playOptions ?? (explicitTrack ? {} : optionsOrTrack) ?? {};
+        const { startTime, endTime, noReplace = false } = options;
+        for (const value of [startTime, endTime]) {
+            if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throw new RangeError("Playback times must be non-negative integer milliseconds.");
         }
-        if (!this.queue.current)
-            throw new RangeError("No current track.");
-        const finalOptions = playOptions
-            ? { ...playOptions }
-            : ["startTime", "endTime", "noReplace"].every((v) => Object.keys(optionsOrTrack || {}).includes(v))
-                ? { ...optionsOrTrack }
-                : {};
-        if (finalOptions.startTime != null) {
-            finalOptions.position = finalOptions.startTime;
-            delete finalOptions.startTime;
-        }
-        await this.node.rest.updatePlayer({
+        if (endTime !== undefined && endTime <= (startTime ?? 0)) throw new RangeError("endTime must be after startTime.");
+        const playbackId = randomUUID();
+        const response = await this.node.rest.updatePlayer({
             guildId: this.guildId,
+            noReplace,
             data: {
-                encodedTrack: this.queue.current?.track,
-                ...finalOptions,
+                track: { encoded: track.track, userData: { pulsifyPlaybackId: playbackId } },
+                position: startTime ?? 0, endTime, paused: false, volume: this.volume,
             },
         });
+        if (noReplace && response?.track?.userData?.pulsifyPlaybackId !== playbackId) return this;
+        this.playbackId = playbackId;
+        if (this.queue.current !== track) this.set("trackFailureAttempts", 0);
+        this.queue.current = track;
+        if (!this.isAutoplayTrack(track)) this.lastUserRequestedTrackId = track.identifier ?? null;
+        this.lastActivityAt = Date.now();
+        this.position = startTime ?? 0;
         this.playing = true;
-        this.position = Number(finalOptions.position) || 0;
+        this.paused = false;
         return this;
     }
     /**
@@ -464,10 +408,11 @@ class Player {
             if (!botUser) {
                 throw new Error("botUser must be provided when enabling autoplay.");
             }
-            if (!["ClientUser", "User"].includes(botUser.constructor.name)) {
+            if (typeof botUser.id !== "string" || !botUser.id) {
                 throw new Error("botUser must be a user-object.");
             }
-            this.autoplayTries = tries && typeof tries === "number" && tries > 0 ? tries : 3; // Default to 3 if invalid
+            if (tries != null && (!Number.isSafeInteger(tries) || tries < 1 || tries > 10)) throw new RangeError("Autoplay tries must be between 1 and 10.");
+            this.autoplayTries = tries ?? 3;
             this.isAutoplay = true;
             this.autoplayEnabled = true;
             this.set("Internal_BotUser", botUser);
@@ -494,7 +439,7 @@ class Player {
      * @returns {Promise<Track[]>} - Array of recommended tracks.
      */
     async getRecommendedTracks(track) {
-        const tracks = await Utils_1.AutoPlayUtils.getRecommendedTracks(track);
+        const tracks = await Utils_1.AutoPlayUtils.getRecommendedTracks(track, this.manager, this.node);
         return tracks;
     }
     clearAutoplayPool() {
@@ -557,7 +502,12 @@ class Player {
         return filtered;
     }
     mergeAndShuffleAutoplayPool(oldPool, newPool, seedTrack) {
-        return _.shuffle(this.filterAutoplayTracks([...(oldPool ?? []), ...(newPool ?? [])], seedTrack));
+        const tracks = this.filterAutoplayTracks([...(oldPool ?? []), ...(newPool ?? [])], seedTrack);
+        for (let index = tracks.length - 1; index > 0; index--) {
+            const other = Math.floor(Math.random() * (index + 1));
+            [tracks[index], tracks[other]] = [tracks[other], tracks[index]];
+        }
+        return tracks.slice(0, 100);
     }
     async refreshAutoplayPool(seedTrack, mergeExisting = false) {
         const preparedSeedTrack = this.createAutoplayTrack(seedTrack);
@@ -568,9 +518,10 @@ class Player {
             return this.autoplayPool;
         this.autoplayRecommendationAt = now;
         const freshTracks = this.filterAutoplayTracks(await this.getRecommendedTracks(preparedSeedTrack), preparedSeedTrack);
+        if (this.destroyRequested || !this.autoplayEnabled) return [];
         this.autoplayPool = mergeExisting
             ? this.mergeAndShuffleAutoplayPool(this.autoplayPool, freshTracks, preparedSeedTrack)
-            : freshTracks;
+            : freshTracks.slice(0, 100);
         this.lastAutoplaySeedTrackId = preparedSeedTrack.identifier ?? null;
         return this.autoplayPool;
     }
@@ -580,15 +531,10 @@ class Player {
         const nextTrack = this.autoplayPool.shift();
         if (!nextTrack)
             return false;
-        // queueEnd clears queue.current before requesting autoplay. Adding the
-        // recommendation to the queue is not enough: play() reads the active
-        // track from queue.current, so autoplay would otherwise fail with
-        // "No current track" after the first pool is exhausted.
-        this.queue.current = nextTrack;
+        if (this.destroyRequested || this.queue.current || this.queue.length) return false;
+        await this.play(nextTrack);
         this.autoplayHistory.push(nextTrack.identifier);
-        if (this.autoplayHistory.length > 25)
-            this.autoplayHistory.shift();
-        await this.play();
+        if (this.autoplayHistory.length > 25) this.autoplayHistory.shift();
         return true;
     }
     /**
@@ -602,23 +548,17 @@ class Player {
      * player.setVolume(50);
      */
     async setVolume(volume) {
-        if (isNaN(volume))
-            throw new TypeError("Volume must be a number.");
-        if (volume < 0 || volume > 1000)
-            throw new RangeError("Volume must be between 0 and 1000.");
-        const oldPlayer = this ? { ...this } : null;
-        await this.node.rest.updatePlayer({
-            guildId: this.options.guildId,
-            data: {
-                volume,
-            },
+        if (!Number.isInteger(volume) || volume < 0 || volume > 1000) throw new RangeError("Volume must be an integer between 0 and 1000.");
+        return this.runOperation(async () => {
+            const oldPlayer = { ...this };
+            await this.node.rest.updatePlayer({ guildId: this.guildId, data: { volume } });
+            this.volume = volume;
+            this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, this, {
+                changeType: Manager_1.PlayerStateEventTypes.VolumeChange,
+                details: { previousVolume: oldPlayer.volume, currentVolume: volume },
+            });
+            return this;
         });
-        this.volume = volume;
-        this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, this, {
-            changeType: Manager_1.PlayerStateEventTypes.VolumeChange,
-            details: { previousVolume: oldPlayer.volume || null, currentVolume: this.volume },
-        });
-        return this;
     }
     /**
      * Sets the sponsorblock for the player. This will set the sponsorblock segments for the player to the given segments.
@@ -728,12 +668,13 @@ class Player {
             throw new TypeError('Repeat can only be "true" or "false".');
         }
         // Ensure the queue has more than one track for dynamic repeat
-        if (this.queue.size <= 1) {
+        if (repeat && this.queue.size <= 1) {
             throw new RangeError("The queue size must be greater than 1.");
         }
         // Clone the current player state for comparison
         const oldPlayer = this ? { ...this } : null;
         if (repeat) {
+            if (!Number.isSafeInteger(ms) || ms < 1 || ms > 2147483647) throw new RangeError("Invalid repeat interval.");
             // Disable other repeat modes when dynamic repeat is enabled
             this.trackRepeat = false;
             this.queueRepeat = false;
@@ -746,13 +687,9 @@ class Player {
             this.dynamicLoopInterval = setInterval(() => {
                 if (!this.dynamicRepeat)
                     return;
-                // Shuffle the queue and replace it with the shuffled tracks
-                const shuffled = _.shuffle(this.queue);
-                this.queue.clear();
-                shuffled.forEach((track) => {
-                    this.queue.add(track);
-                });
+                this.queue.shuffle();
             }, ms);
+            this.dynamicLoopInterval.unref();
             // Store the ms value
             this.dynamicRepeatIntervalMs = ms;
         }
@@ -782,157 +719,71 @@ class Player {
      * @returns {Promise<Player>} The current instance of the Player class for method chaining.
      */
     async restart() {
-        // Check if there is a current track in the queue
-        if (!this.queue.current?.track) {
-            // If the queue has tracks, play the next one
-            if (this.queue.length)
-                await this.play();
+        return this.runOperation(async () => {
+            if (!this.queue.current) this.queue.current = this.queue.shift() ?? null;
+            return this.queue.current ? this.playTrack() : this;
+        });
+    }
+
+    async stop(amount = 1) {
+        if (!Number.isSafeInteger(amount) || amount < 1) throw new RangeError("Skip amount must be a positive integer.");
+        return this.runOperation(async () => {
+            if (amount > this.queue.totalSize && amount > 1) throw new RangeError("Cannot skip more than the queue length.");
+            if (!this.queue.current) return this;
+            const oldPlayer = { ...this };
+            await this.node.rest.updatePlayer({ guildId: this.guildId, data: { track: { encoded: null } } });
+            const tracks = this.queue.splice(0, amount - 1);
+            this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, this, {
+                changeType: Manager_1.PlayerStateEventTypes.QueueChange, details: { changeType: "remove", tracks },
+            });
             return this;
-        }
-        // Reset the track's position to the start
-        await this.node.rest.updatePlayer({
-            guildId: this.guildId,
-            data: {
-                position: 0,
-                encodedTrack: this.queue.current?.track,
-            },
         });
-        return this;
     }
-    /**
-     * Stops the player and optionally removes tracks from the queue.
-     * @param {number} [amount] The amount of tracks to remove from the queue. If not provided, removes the current track if it exists.
-     * @returns {Promise<this>} - The player instance.
-     * @throws {RangeError} If the amount is greater than the queue length.
-     */
-    async stop(amount) {
-        const oldPlayer = { ...this };
-        let removedTracks = [];
-        if (typeof amount === "number" && amount > 1) {
-            if (amount > this.queue.length)
-                throw new RangeError("Cannot skip more than the queue length.");
-            removedTracks = this.queue.slice(0, amount - 1);
-            this.queue.splice(0, amount - 1);
-        }
-        await this.node.rest.updatePlayer({
-            guildId: this.guildId,
-            data: {
-                encodedTrack: null,
-            },
-        });
-        this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, this, {
-            changeType: Manager_1.PlayerStateEventTypes.QueueChange,
-            details: {
-                changeType: "remove",
-                tracks: removedTracks,
-            },
-        });
-        return this;
-    }
-    /**
-     * Skips the current track.
-     * @returns {this} - The player instance.
-     * @throws {Error} If there are no tracks in the queue.
-     * @emits {PlayerStateUpdate} - With {@link PlayerStateEventTypes.TrackChange} as the change type.
-     */
+
     async pause(pause) {
-        // Validate the pause parameter to ensure it's a boolean.
-        if (typeof pause !== "boolean")
-            throw new RangeError('Pause can only be "true" or "false".');
-        // If the pause state is already as desired or there are no tracks, return early.
-        if (this.paused === pause || !this.queue.totalSize)
+        if (typeof pause !== "boolean") throw new TypeError("Pause must be a boolean.");
+        return this.runOperation(async () => {
+            if (this.paused === pause || !this.queue.current) return this;
+            const oldPlayer = { ...this };
+            await this.node.rest.updatePlayer({ guildId: this.guildId, data: { paused: pause } });
+            this.playing = !pause;
+            this.paused = pause;
+            this.lastActivityAt = Date.now();
+            this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, this, {
+                changeType: Manager_1.PlayerStateEventTypes.PauseChange,
+                details: { previousPause: oldPlayer.paused, currentPause: pause },
+            });
             return this;
-        // Create a copy of the current player state for event emission.
-        const oldPlayer = this ? { ...this } : null;
-        // Update the playing and paused states.
-        this.playing = !pause;
-        this.paused = pause;
-        // Send an update to the backend to change the pause state of the player.
-        await this.node.rest.updatePlayer({
-            guildId: this.guildId,
-            data: {
-                paused: pause,
-            },
         });
-        // Emit an event indicating the pause state has changed.
-        this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, this, {
-            changeType: Manager_1.PlayerStateEventTypes.PauseChange,
-            details: {
-                previousPause: oldPlayer.paused,
-                currentPause: this.paused,
-            },
-        });
-        return this;
     }
-    /**
- * Skips to the previous track in the queue.
- * @returns {this} - The player instance.
- * @throws {Error} If there are no previous tracks in the queue.
- * @emits {PlayerStateUpdate} - With {@link PlayerStateEventTypes.TrackChange} as the change type.
- */
+
     async previous() {
-        if (!this.queue.previous.length) {
-            throw new Error("There is no previous track.");
-        }
-
-        const current = this.queue.current;
-        const previousTrack = this.queue.previous.pop();
-
-        // ✅ Only push current to queue if it's NOT the same as the previous one already there
-        if (
-            current &&
-            (!this.queue[0] || this.queue[0].identifier !== current.identifier)
-        ) {
-            this.queue.unshift(current);
-        }
-
-        this.queue.current = previousTrack;
-
-        await this.play();
+        return this.runOperation(async () => {
+            const previous = this.queue.previous.at(-1);
+            if (!previous) throw new Error("There is no previous track.");
+            const current = this.queue.current;
+            await this.playTrack(previous);
+            this.queue.previous.pop();
+            if (current && this.queue[0] !== current && this.queue.totalSize < this.manager.options.maxQueueSize) this.queue.unshift(current);
+            return this;
+        });
     }
 
-
-
-    /**
-     * Seeks to a given position in the currently playing track.
-     * @param position - The position in milliseconds to seek to.
-     * @returns {this} - The player instance.
-     * @throws {Error} If the position is invalid.
-     * @emits {PlayerStateUpdate} - With {@link PlayerStateEventTypes.TrackChange} as the change type.
-     */
     async seek(position) {
-        if (!this.queue.current)
-            return undefined;
-        position = Number(position);
-        // Check if the position is valid.
-        if (isNaN(position)) {
-            throw new RangeError("Position must be a number.");
-        }
-        // Get the old player state.
-        const oldPlayer = this ? { ...this } : null;
-        // Clamp the position to ensure it is within the valid range.
-        if (position < 0 || position > this.queue.current.duration) {
-            position = Math.max(Math.min(position, this.queue.current.duration), 0);
-        }
-        // Update the player's position.
-        this.position = position;
-        // Send the seek request to the node.
-        await this.node.rest.updatePlayer({
-            guildId: this.guildId,
-            data: {
-                position: position,
-            },
+        if (!Number.isFinite(position)) throw new RangeError("Position must be a finite number.");
+        return this.runOperation(async () => {
+            if (!this.queue.current) return undefined;
+            if (this.queue.current.isSeekable === false) throw new RangeError("Current track does not support seeking.");
+            const oldPlayer = { ...this };
+            const target = Math.trunc(Math.max(0, Math.min(position, this.queue.current.duration ?? Infinity)));
+            await this.node.rest.updatePlayer({ guildId: this.guildId, data: { position: target } });
+            this.position = target;
+            this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, this, {
+                changeType: Manager_1.PlayerStateEventTypes.TrackChange,
+                details: { changeType: "timeUpdate", previousTime: oldPlayer.position, currentTime: target },
+            });
+            return this;
         });
-        // Emit an event to notify the manager of the track change.
-        this.manager.emit(Manager_1.ManagerEventTypes.PlayerStateUpdate, oldPlayer, this, {
-            changeType: Manager_1.PlayerStateEventTypes.TrackChange,
-            details: {
-                changeType: "timeUpdate",
-                previousTime: oldPlayer.position,
-                currentTime: this.position,
-            },
-        });
-        return this;
     }
     /**
      * Returns the current repeat state of the player.
@@ -958,82 +809,58 @@ class Player {
      * @returns {Promise<boolean>} Whether a sync payload was sent.
      */
     async resyncState() {
-        if (!this.node?.sessionId)
-            return false;
-        const sessionId = this.voiceState?.sessionId;
-        const token = this.voiceState?.event?.token;
-        const endpoint = this.voiceState?.event?.endpoint;
-        const voice = token && endpoint && sessionId && this.voiceChannelId
-            ? { token, endpoint, sessionId, channelId: this.voiceChannelId }
-            : undefined;
-        if (!voice && !this.queue.current)
-            return false;
-        await this.node.rest.updatePlayer({
+        return this.runOperation(() => this.restoreOn(this.node));
+    }
+
+    async restoreOn(node) {
+        if (!node.sessionId || !this.voiceChannelId) return false;
+        const { event, channelId, sessionId } = this.voiceState;
+        const voice = event?.token && event.endpoint && channelId && sessionId
+            ? { ...event, channelId, sessionId } : undefined;
+        const playbackId = randomUUID();
+        const track = this.playing || this.paused ? this.queue.current : null;
+        await node.rest.updatePlayer({
             guildId: this.guildId,
             data: {
-                paused: this.paused,
-                volume: this.volume,
-                position: this.position,
-                encodedTrack: this.queue.current?.track ?? null,
-                ...(voice ? { voice } : {}),
+                paused: this.paused, volume: this.volume, position: track?.isSeekable === false ? 0 : this.position,
+                track: { encoded: track?.track ?? null, userData: { pulsifyPlaybackId: playbackId } },
+                filters: this.filters.payload(), voice,
             },
         });
-        if (this.filters) {
-            await this.filters.updateFilters().catch(() => { });
-        }
+        this.playbackId = playbackId;
+        this.playing = !!track && !this.paused;
+        if (voice) this.voiceState.sent = { ...voice, event, node, nodeSession: node.sessionId };
+        else this.connect(true);
         return true;
     }
-    /**
-     * Automatically moves the player to a usable node.
-     * @returns {Promise<Player | void>} - The player instance or void if not moved.
-     */
+
     async autoMoveNode() {
-        // Get a usable node from the manager
-        const node = this.manager.useableNode;
-        if (!node || node === this.node) {
-            return this;
-        }
-        // Move the player to the usable node and return the result
-        return await this.moveNode(node.options.identifier);
+        const node = this.manager.getFailoverNode(this.node);
+        if (!node) return this;
+        try { return await this.moveNode(node.options.identifier); }
+        finally { this.manager.releaseFailoverReservation(node); }
     }
-    /**
-     * Moves the player to another node.
-     * @param {string} identifier - The identifier of the node to move to.
-     * @returns {Promise<Player>} - The player instance after being moved.
-     */
+
     async moveNode(identifier) {
-        const node = this.manager.nodes.get(identifier);
-        if (!node)
-            throw new Error(`Node with identifier ${identifier} not found`);
-        if (node.options.identifier === this.node.options.identifier) {
-            return this;
-        }
-        const oldNode = this.node;
-        try {
-            const playerPosition = this.position;
-            const currentTrack = this.queue.current ? this.queue.current : null;
-            await this.node.rest.destroyPlayer(this.guildId).catch(() => { });
-            this.manager.players.delete(this.guildId);
+        return this.runOperation(async () => {
+            const node = this.manager.nodes.get(identifier);
+            if (!node?.connected) throw new Error("Destination Lavalink node is unavailable.");
+            const oldNode = this.node;
+            if (node === oldNode) return this;
+            this.movingTo = node;
+            try {
+                if (!await this.restoreOn(node)) throw new Error("Player could not be restored on the destination node.");
+            } finally {
+                this.movingTo = undefined;
+            }
+            oldNode.localPlayers--;
+            node.localPlayers = (node.localPlayers ?? 0) + 1;
             this.node = node;
-            this.manager.players.set(this.guildId, this);
-            await this.node.rest.updatePlayer({
-                guildId: this.guildId,
-                data: {
-                    paused: this.paused,
-                    volume: this.volume,
-                    position: playerPosition,
-                    encodedTrack: currentTrack?.track,
-                },
-            });
-            this.position = playerPosition;
-            await this.resyncState();
+            this.options.node = identifier;
+            try { await oldNode.rest.destroyPlayer(this.guildId); }
+            catch (error) { oldNode.error(error); }
             return this;
-        }
-        catch (error) {
-            this.node = oldNode;
-            this.manager.players.set(this.guildId, this);
-            throw new Error(`Failed to move player to node ${identifier}: ${error}`);
-        }
+        });
     }
     /**
      * Transfers the player to a new server. If the player already exists on the new server
@@ -1044,6 +871,7 @@ class Player {
      * @returns {Promise<Player>} - The new player instance.
      */
     async switchGuild(newOptions, force = false) {
+        if (newOptions.guildId === this.guildId) return this;
         if (!newOptions.guildId)
             throw new Error("guildId is required");
         if (!newOptions.voiceChannelId)
@@ -1072,45 +900,48 @@ class Player {
             dynamicRepeatIntervalMs: this.dynamicRepeatIntervalMs,
             ClientUser: this.get("Internal_BotUser"),
             filters: this.filters,
-            nowPlayingMessage: this.nowPlayingMessage,
             isAutoplay: this.isAutoplay,
         };
         // If force is true, destroy the existing player for the new guild
         if (force && newPlayer) {
             await newPlayer.destroy();
         }
-        newOptions.node = newOptions.node ?? this.options.node;
+        newOptions = { ...newOptions };
+        newOptions.node = newOptions.node ?? this.node.options.identifier;
         newOptions.selfDeafen = newOptions.selfDeafen ?? oldPlayerProperties.selfDeafen;
         newOptions.selfMute = newOptions.selfMute ?? oldPlayerProperties.selfMute;
         newOptions.volume = newOptions.volume ?? oldPlayerProperties.volume;
         // Deep clone the current player
         const clonedPlayer = this.manager.create(newOptions);
-        // Connect the cloned player to the new voice channel
-        clonedPlayer.connect();
-        // Update the player's state on the Lavalink node
-        await clonedPlayer.node.rest.updatePlayer({
-            guildId: clonedPlayer.guildId,
-            data: {
-                paused: oldPlayerProperties.paused,
-                volume: oldPlayerProperties.volume,
-                position: oldPlayerProperties.position,
-                encodedTrack: oldPlayerProperties.queue.current?.track,
-            },
-        });
-        clonedPlayer.queue.current = oldPlayerProperties.queue.current;
-        clonedPlayer.queue.previous = oldPlayerProperties.queue.previous;
-        clonedPlayer.queue.add(oldPlayerProperties.queue.tracks);
-        clonedPlayer.filters = oldPlayerProperties.filters;
-        clonedPlayer.isAutoplay = oldPlayerProperties.isAutoplay;
-        clonedPlayer.nowPlayingMessage = oldPlayerProperties.nowPlayingMessage;
-        clonedPlayer.trackRepeat = oldPlayerProperties.trackRepeat;
-        clonedPlayer.queueRepeat = oldPlayerProperties.queueRepeat;
-        clonedPlayer.dynamicRepeat = oldPlayerProperties.dynamicRepeat;
-        clonedPlayer.dynamicRepeatIntervalMs = oldPlayerProperties.dynamicRepeatIntervalMs;
-        clonedPlayer.set("Internal_BotUser", oldPlayerProperties.ClientUser);
-        clonedPlayer.paused = oldPlayerProperties.paused;
-        // Update filters for the cloned player
-        await clonedPlayer.filters.updateFilters();
+        try {
+            // Connect the cloned player to the new voice channel
+            clonedPlayer.connect();
+            // Update the player's state on the Lavalink node
+            await clonedPlayer.node.rest.updatePlayer({
+                guildId: clonedPlayer.guildId,
+                data: {
+                    paused: oldPlayerProperties.paused,
+                    volume: oldPlayerProperties.volume,
+                    position: oldPlayerProperties.position,
+                    encodedTrack: oldPlayerProperties.queue.current?.track,
+                },
+            });
+            clonedPlayer.queue.current = oldPlayerProperties.queue.current;
+            clonedPlayer.queue.previous = oldPlayerProperties.queue.previous;
+            clonedPlayer.queue.add(oldPlayerProperties.queue.tracks);
+            clonedPlayer.filters.restore(oldPlayerProperties.filters.snapshot());
+            clonedPlayer.isAutoplay = oldPlayerProperties.isAutoplay;
+            clonedPlayer.trackRepeat = oldPlayerProperties.trackRepeat;
+            clonedPlayer.queueRepeat = oldPlayerProperties.queueRepeat;
+            if (oldPlayerProperties.dynamicRepeat && clonedPlayer.queue.size > 1) clonedPlayer.setDynamicRepeat(true, oldPlayerProperties.dynamicRepeatIntervalMs);
+            if (oldPlayerProperties.isAutoplay && oldPlayerProperties.ClientUser) clonedPlayer.setAutoplay(true, oldPlayerProperties.ClientUser, this.autoplayTries);
+            clonedPlayer.paused = oldPlayerProperties.paused;
+            // Update filters for the cloned player
+            await clonedPlayer.filters.updateFilters();
+        } catch (error) {
+            try { await clonedPlayer.destroy(); } catch (cleanupError) { clonedPlayer.node.error(cleanupError); }
+            throw error;
+        }
         // Debug information
         const debugInfo = {
             success: true,
@@ -1125,7 +956,7 @@ class Player {
             },
         };
         this.manager.emit(Manager_1.ManagerEventTypes.Debug, `[PLAYER] Transferred player to a new server: ${JSON.stringify(debugInfo)}.`);
-        // Return the cloned player
+        await this.destroy();
         return clonedPlayer;
     }
     /**
